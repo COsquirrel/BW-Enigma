@@ -12,7 +12,7 @@ public:
 
     bool init() {
         pinMode(OLED_VEXT, OUTPUT);
-        digitalWrite(OLED_VEXT, HIGH);
+        digitalWrite(OLED_VEXT, LOW);  // Heltec V3: LOW enables VEXT power rail
         delay(100);
 
         pinMode(OLED_RST, OUTPUT);
@@ -37,7 +37,11 @@ public:
         _oled.setCursor(0, 10); _oled.println("  ENIGMA v0.3");
         _oled.drawFastHLine(0, 22, SCREEN_WIDTH, SSD1306_WHITE);
         _oled.setCursor(0, 26); _oled.print("  Role: "); _oled.println(role);
+#if RADIO_MODE == RADIO_LORA
+        _oled.setCursor(0, 36); _oled.println("  LoRa ready");
+#else
         _oled.setCursor(0, 36); _oled.println("  ESP-NOW ready");
+#endif
         _oled.display();
     }
 

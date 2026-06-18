@@ -13,9 +13,9 @@ public:
         _prefs   = prefs;
         _onClose = onClose;
 
-        /* Full-screen overlay */
+        /* Upper overlay; leave the keyboard visible for callsign entry. */
         root = lv_obj_create(parent);
-        lv_obj_set_size(root, DISP_W, DISP_H);
+        lv_obj_set_size(root, DISP_W, DISP_H - KEYBOARD_H);
         lv_obj_set_pos(root, 0, 0);
         lv_obj_set_style_bg_color(root, lv_color_hex(CLR_BG), 0);
         lv_obj_set_style_border_color(root, lv_color_hex(CLR_AMBER), 0);
@@ -102,6 +102,10 @@ public:
             lv_obj_del(root);
             root = nullptr;
         }
+    }
+
+    lv_obj_t* callsignTextArea() const {
+        return _csTa;
     }
 
 private:

@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <ArduinoJson.h>
 #include "cipher/enigma.h"
 #include "config/config.h"
 #include "config/key_storage.h"
@@ -11,14 +12,26 @@
 #include "display/display.h"
 #include "utils.h"
 
+/* ── CrowPanel bridge UART (UART1) ──────────────────────────────────────────
+   On Heltec WiFi LoRa 32 V3 (ESP32-S3), Serial uses native USB CDC so
+   GPIO43/44 are free for a second hardware UART.
+   Physical wiring: Heltec GPIO43 TX → CrowPanel GPIO18 RX
+                    Heltec GPIO44 RX ← CrowPanel GPIO17 TX
+   ────────────────────────────────────────────────────────────────────────── */
+#define CROW_TX_PIN  43
+#define CROW_RX_PIN  44
+static HardwareSerial CrowSerial(1);
+
+/* ── Role / peer ─────────────────────────────────────────────────────────── */
 #if UNIT_ROLE == ROLE_UNIT1
 static const uint8_t PEER_MAC[] = UNIT2_MAC;
-static const char*   UNIT_STR   = "UNIT 1";
+static const char*   UNIT_STR   = "UNIT1";
 #else
 static const uint8_t PEER_MAC[] = UNIT1_MAC;
-static const char*   UNIT_STR   = "UNIT 2";
+static const char*   UNIT_STR   = "UNIT2";
 #endif
 
+/* ── Globals ─────────────────────────────────────────────────────────────── */
 Enigma      enigma;
 #if RADIO_MODE == RADIO_LORA
 LoRaRadio   radio;
@@ -28,141 +41,129 @@ EspNowRadio radio(PEER_MAC);
 Display     display;
 KeyStorage  keyStorage;
 
-// Active config — rotor wirings are always from ACTIVE_CONFIG; starts and
-// plugboard may be overridden from NVS on boot.
 static EnigmaConfig activeCfg;
 static bool         keyFromNVS = false;
 
-void sep() { Serial.println("--------------------------------------------------"); }
+/* ── Non-blocking line accumulator for CrowSerial ────────────────────────── */
+static char _crowBuf[512];
+static int  _crowLen = 0;
 
+/* ── JSON helpers ────────────────────────────────────────────────────────── */
+static void sendToCrow(JsonDocument& doc) {
+    serializeJson(doc, CrowSerial);
+    CrowSerial.print('\n');
+}
+
+static void sendStatus(bool radioOk) {
+    JsonDocument doc;
+    doc["type"]  = "status";
+    doc["radio"] = radioOk ? "ok" : "err";
+    doc["key"]   = keyFromNVS ? "nvs" : "def";
+    doc["rssi"]  = 0;
+    doc["snr"]   = 0.0;
+    sendToCrow(doc);
+}
+
+/* ── Handle a complete JSON line received from the CrowPanel ─────────────── */
+static void handleCrowJson(const char* raw) {
+    JsonDocument doc;
+    if (deserializeJson(doc, raw) != DeserializationError::Ok) {
+        Serial.print("[CROW] bad JSON: "); Serial.println(raw);
+        return;
+    }
+    const char* type = doc["type"] | "";
+
+    if (strcmp(type, "tx") == 0) {
+        const char* msg = doc["msg"] | "";
+        String clean = sanitizeInput(String(msg));
+
+        JsonDocument ack;
+        ack["type"] = "tx_ack";
+
+        if (clean.length() == 0) {
+            ack["success"] = false;
+            sendToCrow(ack);
+            return;
+        }
+
+        String cipher = enigma.processString(clean);
+        display.showSent(clean, cipher);
+        bool ok = radio.send(cipher);
+
+        Serial.print("[TX] plain=");  Serial.print(clean);
+        Serial.print(" cipher=");     Serial.print(cipher);
+        Serial.print(" ok=");         Serial.println(ok);
+
+        ack["success"] = ok;
+        sendToCrow(ack);
+    }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   setup
+   ════════════════════════════════════════════════════════════════════════════ */
 void setup() {
     Serial.begin(115200);
-    delay(500);
-
-#if RADIO_MODE == RADIO_ESPNOW
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
-    delay(100);
-    Serial.println("WiFi done");
-#endif
+    CrowSerial.begin(115200, SERIAL_8N1, CROW_RX_PIN, CROW_TX_PIN);
+    delay(200);
 
     bool dispOk = display.init();
 
-    // Build active config: start from hardcoded tables, then overlay NVS values
     activeCfg  = ACTIVE_CONFIG;
     keyFromNVS = keyStorage.load(activeCfg.rotor_start, activeCfg.plugboard);
     enigma.init(activeCfg);
 
-    sep();
-    Serial.println("  BADGER WORKS ENIGMA v0.3");
-    Serial.print("  Unit:    "); Serial.println(UNIT_STR);
-    Serial.print("  MAC:     "); Serial.println(WiFi.macAddress());
-    Serial.print("  Key:     "); Serial.println(keyFromNVS ? "NVS" : "DEFAULT");
-    Serial.print("  Display: "); Serial.println(dispOk ? "OK" : "FAILED");
-    sep();
+    Serial.println("[SYS] BW ENIGMA v0.3 — JSON bridge mode");
+    Serial.print("[SYS] Unit:    "); Serial.println(UNIT_STR);
+    Serial.print("[SYS] Key:     "); Serial.println(keyFromNVS ? "NVS" : "DEFAULT");
+    Serial.print("[SYS] Display: "); Serial.println(dispOk ? "OK" : "FAILED");
 
-    Serial.print("ESP-NOW init... ");
-    Serial.println(radio.init() ? "OK" : "FAILED");
+    bool radioOk = radio.init();
+    Serial.print("[SYS] Radio:   "); Serial.println(radioOk ? "OK" : "FAILED");
 
     if (dispOk) display.showSplash(UNIT_STR);
 
-    sep();
-    Serial.println("Type message + Enter to encrypt and send.");
-    Serial.println("Commands: !debug  !reset  !showkey  !savekey  !clearkey");
-    sep();
+    /* Send initial status to CrowPanel */
+    sendStatus(radioOk);
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+   loop
+   ════════════════════════════════════════════════════════════════════════════ */
 void loop() {
-    // ---- TX: type on serial to encrypt and send ----
-    if (Serial.available()) {
-        String raw = Serial.readStringUntil('\n');
-        raw.trim();
-        if (raw.length() == 0) return;
-
-        // ---- commands ----
-        if (raw == "!debug") {
-            uint8_t l, m, r;
-            enigma.getRotorOffsets(l, m, r);
-            Serial.print("Rotors L:"); Serial.print(l);
-            Serial.print(" M:"); Serial.print(m);
-            Serial.print(" R:"); Serial.println(r);
-            Serial.print("MAC: "); Serial.println(WiFi.macAddress());
-            return;
-        }
-
-        if (raw == "!reset") {
-            enigma.reset();
-            Serial.println("Rotors reset.");
-            display.showStatus("Rotors reset.");
-            return;
-        }
-
-        if (raw == "!showkey") {
-            Serial.print("Key source:    "); Serial.println(keyFromNVS ? "NVS" : "DEFAULT");
-            Serial.print("Rotor starts:  L="); Serial.print(activeCfg.rotor_start[0]);
-            Serial.print(" M=");               Serial.print(activeCfg.rotor_start[1]);
-            Serial.print(" R=");               Serial.println(activeCfg.rotor_start[2]);
-            int nonIdentity = 0;
-            for (int i = 0; i < CIPHER_RANGE; i++) {
-                if (activeCfg.plugboard[i] != i) nonIdentity++;
+    /* ── RX from CrowPanel: accumulate chars, dispatch on newline ── */
+    while (CrowSerial.available()) {
+        char c = (char)CrowSerial.read();
+        if (c == '\n' || c == '\r') {
+            if (_crowLen > 0) {
+                _crowBuf[_crowLen] = '\0';
+                handleCrowJson(_crowBuf);
+                _crowLen = 0;
             }
-            Serial.print("Plugboard:     ");
-            if (nonIdentity == 0) {
-                Serial.println("identity (no swaps)");
-            } else {
-                Serial.print(nonIdentity / 2);
-                Serial.println(" swap pairs");
-            }
-            return;
+        } else if (_crowLen < (int)(sizeof(_crowBuf) - 1)) {
+            _crowBuf[_crowLen++] = c;
         }
-
-        if (raw == "!savekey") {
-            bool ok = keyStorage.save(activeCfg.rotor_start, activeCfg.plugboard);
-            if (ok) {
-                keyFromNVS = true;
-                Serial.println("Key saved to NVS.");
-                display.showStatus("Key saved.");
-            } else {
-                Serial.println("ERROR: NVS write failed.");
-                display.showStatus("Save failed!");
-            }
-            return;
-        }
-
-        if (raw == "!clearkey") {
-            keyStorage.clear();
-            activeCfg  = ACTIVE_CONFIG;
-            keyFromNVS = false;
-            enigma.init(activeCfg);
-            Serial.println("NVS cleared. Using defaults.");
-            display.showStatus("Key cleared.");
-            return;
-        }
-
-        // ---- encrypt and send ----
-        String clean = sanitizeInput(raw);
-        if (clean.length() == 0) { Serial.println("(empty after sanitize)"); return; }
-        if (clean != raw) { Serial.print("(sanitized: "); Serial.print(clean); Serial.println(")"); }
-
-        String cipher = enigma.processString(clean);
-        display.showSent(clean, cipher);
-
-        sep();
-        Serial.print("PLAIN:  "); Serial.println(clean);
-        Serial.print("CIPHER: "); Serial.println(cipher);
-        Serial.print("TX: ");     Serial.println(radio.send(cipher) ? "OK" : "FAILED");
-        sep();
     }
 
-    // ---- RX: receive and decrypt incoming message ----
+    /* ── RX from LoRa: decrypt, forward to CrowPanel ── */
     if (radio.available()) {
         String cipher = radio.receive();
         String plain  = enigma.processString(cipher);
+        int    rssi   = radio.lastRssi();
+        float  snr    = radio.lastSnr();
+
         display.showReceived(cipher, plain);
 
-        sep();
-        Serial.print("CIPHER: "); Serial.println(cipher);
-        Serial.print("PLAIN:  "); Serial.println(plain);
-        sep();
+        Serial.print("[RX] cipher="); Serial.print(cipher);
+        Serial.print(" plain=");      Serial.println(plain);
+
+        JsonDocument doc;
+        doc["type"]     = "rx";
+        doc["callsign"] = UNIT_STR;
+        doc["plain"]    = plain.c_str();
+        doc["cipher"]   = cipher.c_str();
+        doc["rssi"]     = rssi;
+        doc["snr"]      = snr;
+        sendToCrow(doc);
     }
 }

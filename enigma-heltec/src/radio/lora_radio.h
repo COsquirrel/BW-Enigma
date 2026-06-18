@@ -73,8 +73,9 @@ public:
             memcpy(_lora_rx_buf, str.c_str(), len);
             _lora_rx_buf[len] = '\0';
             _lora_rx_ready = true;
+            _lastRssi = (int)_lora_module.getRSSI();
+            _lastSnr  = _lora_module.getSNR();
         }
-        // Re-arm receive whether read succeeded or not
         _lora_module.startReceive();
         return _lora_rx_ready;
     }
@@ -85,6 +86,11 @@ public:
         return String(_lora_rx_buf);
     }
 
+    int   lastRssi() override { return _lastRssi; }
+    float lastSnr()  override { return _lastSnr; }
+
 private:
-    bool _initialized = false;
+    bool  _initialized = false;
+    int   _lastRssi    = 0;
+    float _lastSnr     = 0.0f;
 };

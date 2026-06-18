@@ -35,7 +35,7 @@ public:
         _buildMsgArea(parent);
         _buildInputBar(parent);
 
-        lv_coord_t kbY = STATUS_BAR_H + 1 + MSG_AREA_H + INPUT_BAR_H;
+        lv_coord_t kbY = DISP_H - KEYBOARD_H;
         _kb.create(parent, kbY, _kbCharCb, _kbActionCb);
     }
 
@@ -67,6 +67,10 @@ public:
         _callsign[sizeof(_callsign) - 1] = '\0';
     }
 
+    void setKeyboardTarget(lv_obj_t* target) {
+        _keyboardTarget = target ? target : _inputTa;
+    }
+
 private:
     lv_obj_t* _msgList  = nullptr;
     lv_obj_t* _inputTa  = nullptr;
@@ -74,6 +78,7 @@ private:
     lv_obj_t* _encBtnLbl= nullptr;
     lv_obj_t* _rssiLbl  = nullptr;
     lv_obj_t* _keyLbl   = nullptr;
+    lv_obj_t* _keyboardTarget = nullptr;
 
     char         _callsign[12]     = DEFAULT_CALLSIGN;
     ChatMessage  _msgs[MAX_MESSAGES];
@@ -154,13 +159,8 @@ private:
         lv_obj_set_style_bg_opa(_msgList, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(_msgList, 0, 0);
         lv_obj_set_style_radius(_msgList, 0, 0);
-        lv_obj_set_style_pad_hor(_msgList, 6, 0);
-        lv_obj_set_style_pad_ver(_msgList, 4, 0);
-        lv_obj_set_flex_flow(_msgList, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_flex_align(_msgList, LV_FLEX_ALIGN_END,
-                              LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-        lv_obj_set_scroll_dir(_msgList, LV_DIR_VER);
-        lv_obj_add_flag(_msgList, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_pad_all(_msgList, 0, 0);
+        lv_obj_clear_flag(_msgList, LV_OBJ_FLAG_SCROLLABLE);
     }
 
     /* ─────────────────────────────────────────
@@ -190,6 +190,7 @@ private:
 
         /* Text area */
         _inputTa = lv_textarea_create(bar);
+        _keyboardTarget = _inputTa;
         lv_obj_set_size(_inputTa, DISP_W - 100, INPUT_BAR_H - 8);
         lv_obj_align(_inputTa, LV_ALIGN_LEFT_MID, 26, 0);
         lv_textarea_set_one_line(_inputTa, true);
@@ -223,8 +224,6 @@ private:
                const char* cipher, bool sent, int rssi)
     {
         if (_msgCount == MAX_MESSAGES) {
-            lv_obj_t* oldest = lv_obj_get_child(_msgList, 0);
-            if (oldest) lv_obj_del(oldest);
             _msgHead = (_msgHead + 1) % MAX_MESSAGES;
             _msgCount--;
         }
@@ -239,27 +238,50 @@ private:
         _msgs[idx].rssi = rssi;
         _msgCount++;
 
-        _renderMsg(_msgs[idx]);
-
-        /* Scroll to bottom */
-        lv_obj_scroll_to_y(_msgList, LV_COORD_MAX, LV_ANIM_ON);
+        _redrawMessages();
     }
 
-    void _renderMsg(const ChatMessage& m) {
+    void _redrawMessages() {
+        lv_obj_clean(_msgList);
+
+        lv_coord_t y = MSG_AREA_H - 6;
+        for (int n = _msgCount - 1; n >= 0; n--) {
+            int idx = (_msgHead + n) % MAX_MESSAGES;
+            lv_obj_t* row = _renderMsg(_msgs[idx]);
+            lv_obj_update_layout(row);
+
+            lv_coord_t h = lv_obj_get_height(row);
+            y -= h;
+            if (y < 0) {
+                lv_obj_del(row);
+                break;
+            }
+
+            lv_obj_set_pos(row, 0, y);
+            y -= 4;
+        }
+    }
+
+    lv_obj_t* _renderMsg(const ChatMessage& m) {
         /* Row: full-width transparent container */
         lv_obj_t* row = lv_obj_create(_msgList);
-        lv_obj_set_width(row, lv_pct(100));
+        lv_obj_set_width(row, DISP_W);
         lv_obj_set_height(row, LV_SIZE_CONTENT);
         lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_style_pad_all(row, 2, 0);
+        lv_obj_set_style_pad_hor(row, 6, 0);
+        lv_obj_set_style_pad_ver(row, 2, 0);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row,
+                              m.sent ? LV_FLEX_ALIGN_END : LV_FLEX_ALIGN_START,
+                              LV_FLEX_ALIGN_CENTER,
+                              LV_FLEX_ALIGN_CENTER);
 
         /* Bubble */
         lv_obj_t* bub = lv_obj_create(row);
         lv_obj_set_height(bub, LV_SIZE_CONTENT);
-        lv_obj_set_style_max_width(bub, (lv_coord_t)(DISP_W * 0.70f), 0);
-        lv_obj_set_width(bub, LV_SIZE_CONTENT);
+        lv_obj_set_width(bub, (lv_coord_t)(DISP_W * 0.70f));
         lv_obj_set_style_bg_color(bub,
             lv_color_hex(m.sent ? CLR_BUBBLE_SENT : CLR_BUBBLE_RECV), 0);
         lv_obj_set_style_bg_opa(bub, LV_OPA_COVER, 0);
@@ -269,12 +291,6 @@ private:
         lv_obj_set_style_pad_all(bub, 6, 0);
         lv_obj_clear_flag(bub, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_flex_flow(bub, LV_FLEX_FLOW_COLUMN);
-
-        if (m.sent) {
-            lv_obj_align(bub, LV_ALIGN_RIGHT_MID, -4, 0);
-        } else {
-            lv_obj_align(bub, LV_ALIGN_LEFT_MID, 4, 0);
-        }
 
         /* Main text: <CALLSIGN> message */
         char header[MAX_MSG_LEN + 16];
@@ -299,6 +315,8 @@ private:
             lv_obj_set_style_text_color(cLbl, lv_color_hex(CLR_AMBER_DIM), 0);
             lv_obj_set_style_text_font(cLbl, &lv_font_montserrat_12, 0);
         }
+
+        return row;
     }
 
     /* ─────────────────────────────────────────
@@ -363,18 +381,24 @@ private:
 
     /* Keyboard callbacks — use singleton to reach instance */
     static void _kbCharCb(char ch) {
-        if (s_instance && s_instance->_inputTa) {
+#if UI_DEBUG
+        log_e("[KB] char '%c'", ch);
+#endif
+        if (s_instance && s_instance->_keyboardTarget) {
             char buf[2] = {ch, '\0'};
-            lv_textarea_add_text(s_instance->_inputTa, buf);
+            lv_textarea_add_text(s_instance->_keyboardTarget, buf);
         }
     }
 
     static void _kbActionCb(const char* act) {
         if (!s_instance) return;
+        if (!s_instance->_keyboardTarget) return;
         if (strcmp(act, "BKSP") == 0) {
-            lv_textarea_del_char(s_instance->_inputTa);
+            lv_textarea_del_char(s_instance->_keyboardTarget);
         } else if (strcmp(act, "ENTER") == 0) {
-            s_instance->_doSend();
+            if (s_instance->_keyboardTarget == s_instance->_inputTa) {
+                s_instance->_doSend();
+            }
         }
     }
 

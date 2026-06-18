@@ -26,7 +26,7 @@
 #define OLED_SCL        18
 #define OLED_RST        21
 #define OLED_ADDR       0x3C
-#define OLED_CONTRAST   0xCF  // 0x00-0xFF; default SWITCHCAPVCC is 0xCF
+#define OLED_CONTRAST   0xFF  // 0x00-0xFF; max brightness
 #define SCREEN_WIDTH    128
 #define SCREEN_HEIGHT   64
 

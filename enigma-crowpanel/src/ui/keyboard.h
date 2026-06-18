@@ -114,8 +114,6 @@ private:
         lv_obj_set_pos(btn, x, y);
         lv_obj_set_size(btn, w, h);
         lv_obj_set_style_bg_color(btn, lv_color_hex(CLR_KEY_BG), 0);
-        lv_obj_set_style_bg_color(btn, lv_color_hex(CLR_KEY_PRESS),
-                                  LV_STATE_PRESSED);
         lv_obj_set_style_border_color(btn, lv_color_hex(CLR_AMBER), 0);
         lv_obj_set_style_border_width(btn, 1, 0);
         lv_obj_set_style_radius(btn, 5, 0);
@@ -123,20 +121,21 @@ private:
 
         lv_obj_t* lbl = lv_label_create(btn);
         lv_obj_set_style_text_color(lbl, lv_color_hex(CLR_AMBER), 0);
-        lv_obj_set_style_text_color(lbl, lv_color_hex(CLR_BG),
-                                    LV_STATE_PRESSED);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
         lv_label_set_text(lbl, label);
         lv_obj_center(lbl);
 
         lv_obj_set_user_data(btn, (void*)label);
-        lv_obj_add_event_cb(btn, _keyPressedCb, LV_EVENT_CLICKED, this);
+        lv_obj_add_event_cb(btn, _keyPressedCb, LV_EVENT_PRESSED, this);
     }
 
     static void _keyPressedCb(lv_event_t* e) {
         EnigmaKeyboard* kb = (EnigmaKeyboard*)lv_event_get_user_data(e);
         const char* label  = (const char*)lv_obj_get_user_data(
                                  lv_event_get_target(e));
+#if UI_DEBUG
+        log_e("[KB] pressed label='%s'", label ? label : "NULL");
+#endif
         kb->_handleKey(label);
     }
 

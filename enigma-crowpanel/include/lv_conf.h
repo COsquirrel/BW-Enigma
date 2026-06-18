@@ -7,14 +7,17 @@
 #include <stdint.h>
 
 #define LV_COLOR_DEPTH 16
-#define LV_COLOR_16_SWAP 1
+#define LV_COLOR_16_SWAP 0
 
 #define LV_HOR_RES_MAX 800
 #define LV_VER_RES_MAX 480
 
-/* Memory */
-#define LV_MEM_CUSTOM 0
-#define LV_MEM_SIZE (256 * 1024U)  /* PSRAM available, keep LVGL in DRAM */
+/* Memory — allocate from PSRAM so the 256 KB pool doesn't live in DRAM */
+#define LV_MEM_CUSTOM 1
+#define LV_MEM_CUSTOM_INCLUDE         <esp_heap_caps.h>
+#define LV_MEM_CUSTOM_ALLOC(size)     heap_caps_malloc(size,     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+#define LV_MEM_CUSTOM_FREE(ptr)       heap_caps_free(ptr)
+#define LV_MEM_CUSTOM_REALLOC(ptr,sz) heap_caps_realloc(ptr, sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 
 /* HAL */
 #define LV_TICK_CUSTOM 1
@@ -37,7 +40,7 @@
 #define LV_USE_SCROLL   1
 #define LV_USE_KEYBOARD 0   /* using custom keyboard */
 #define LV_USE_MSGBOX   0
-#define LV_USE_ARC      0
+#define LV_USE_ARC      1
 #define LV_USE_BAR      0
 #define LV_USE_CHART    0
 #define LV_USE_CHECKBOX 0
@@ -47,6 +50,15 @@
 #define LV_USE_TABLE    0
 #define LV_USE_TABVIEW  0
 #define LV_USE_TILEVIEW 0
+#define LV_USE_CALENDAR                 0
+#define LV_USE_CALENDAR_HEADER_ARROW    0
+#define LV_USE_CALENDAR_HEADER_DROPDOWN 0
+#define LV_USE_COLORWHEEL               0
+#define LV_USE_IMGBTN                   0
+#define LV_USE_METER                    0
+#define LV_USE_SPINBOX                  0
+#define LV_USE_SPINNER                  0
+#define LV_USE_WIN                      0
 
 #define LV_USE_LOG      0
 #define LV_USE_ASSERT_NULL 1
@@ -54,6 +66,11 @@
 
 /* Animation */
 #define LV_USE_ANIMATION 1
+
+/* Theme — disable default white theme so our black background applies */
+#define LV_USE_THEME_DEFAULT 0
+#define LV_USE_THEME_BASIC   0
+#define LV_USE_THEME_MONO    0
 
 /* Misc */
 #define LV_SPRINTF_CUSTOM 0
