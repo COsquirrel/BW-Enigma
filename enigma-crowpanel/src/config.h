@@ -50,16 +50,17 @@
 /* ── Link health / heartbeat ── */
 #define CLR_LINK_DOWN   0x660000   /* dark red — link stale > 30 s */
 
-/* ── Per-message ACK stages ─────────────────────────────────────────────────
-   Stored in ChatMessage::ack and driven by tx_ack / remote_ack JSON from
-   the Heltec co-processor.  Values must stay ordered (later = better).      */
-#define MSG_ACK_PENDING   0   /* submitted to Heltec via UART, no reply yet  */
-#define MSG_ACK_UART      1   /* Heltec received via UART                    */
-#define MSG_ACK_RADIO     2   /* esp_now_send() returned OK                  */
-#define MSG_ACK_DELIVERED 3   /* ESP-NOW TX callback: remote MAC acked       */
-#define MSG_ACK_REMOTE    4   /* remote Heltec sent explicit app-level ACK   */
-#define MSG_ACK_FAILED    5   /* any transmission failure                     */
-#define CLR_ACK_FAIL      0x8B0000  /* muted red for failed state */
+/* ── Per-message pipeline stages ────────────────────────────────────────────
+   Stored in ChatMessage::stage; driven by tx_ack / remote_ack from Heltec.
+   Stage value equals the arrow count shown in the UI prefix (0 and 1 → ">").
+   Stage 3 (">>>") is reserved for future far-side OTA ack.                  */
+#define MSG_STAGE_PENDING   0   /* created locally, no Heltec reply yet      */
+#define MSG_STAGE_QUEUED    1   /* Heltec received via UART                  */
+#define MSG_STAGE_ENCRYPTED 2   /* Heltec encrypted + transmitted over air   */
+#define MSG_STAGE_RECEIVED  3   /* far side received — reserved, future OTA  */
+#define MSG_STAGE_COMPLETE  4   /* radio_ack — delivery confirmed            */
+#define MSG_STAGE_FAILED    5   /* any failure                               */
+#define CLR_STAGE_FAIL      0x8B0000  /* muted red for FAIL display */
 
 /* ── Sound (optional piezo buzzer) ──────────────────────────────────────────
    Set BUZZER_PIN to a wired GPIO.  -1 = no buzzer, all sound is no-op.     */

@@ -136,12 +136,12 @@ static void handleCrowJson(const char* raw) {
 
         String clean = sanitizeInput(String(msg));
 
-        /* Stage 1: Heltec UART received */
+        /* Stage queued: UART received */
         {
             JsonDocument ack;
             ack["type"]  = "tx_ack";
             ack["id"]    = id;
-            ack["stage"] = "uart";
+            ack["stage"] = "queued";
             sendToCrow(ack);
         }
 
@@ -158,7 +158,17 @@ static void handleCrowJson(const char* raw) {
         display.showSent(clean, cipher);
         _lastMsgMs = millis();
 
-        /* Stage 2: radio send initiated (sendWithId also arms TX callback) */
+        /* Stage encrypted: cipher computed — send cipher back so CrowPanel can display CT */
+        {
+            JsonDocument ack;
+            ack["type"]   = "tx_ack";
+            ack["id"]     = id;
+            ack["stage"]  = "encrypted";
+            ack["cipher"] = cipher.c_str();
+            sendToCrow(ack);
+        }
+
+        /* Stage transmitted: radio send initiated */
 #if RADIO_MODE == RADIO_ESPNOW
         bool ok = radio.sendWithId(cipher, id);
         if (ok) _radioTxCount++;
@@ -170,7 +180,7 @@ static void handleCrowJson(const char* raw) {
             JsonDocument ack;
             ack["type"]  = "tx_ack";
             ack["id"]    = id;
-            ack["stage"] = ok ? "radio" : "fail";
+            ack["stage"] = ok ? "transmitted" : "fail";
             sendToCrow(ack);
         }
     }
@@ -288,7 +298,7 @@ void loop() {
             JsonDocument ack;
             ack["type"]  = "tx_ack";
             ack["id"]    = _pendingTxId;
-            ack["stage"] = txOk ? "delivered" : "drop";
+            ack["stage"] = txOk ? "radio_ack" : "drop";
             sendToCrow(ack);
         }
     }

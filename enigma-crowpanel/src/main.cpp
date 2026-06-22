@@ -83,12 +83,12 @@ static void onHeltecStatus(const char* /*radio*/, const char* key, int rssi) {
     chat.notifyStatusReceived();
 }
 
-static void onHeltecTxAck(uint16_t id, uint8_t stage) {
-    chat.updateAck(id, stage);
+static void onHeltecTxAck(uint16_t id, uint8_t stage, const char* cipher) {
+    chat.updateStage(id, stage, cipher);
 }
 
 static void onHeltecRemoteAck(uint16_t id) {
-    chat.updateAck(id, MSG_ACK_REMOTE);
+    chat.updateStage(id, MSG_STAGE_COMPLETE, nullptr);
 }
 
 /* ════════════════════════════════════════════════════════════════

@@ -12,10 +12,11 @@ struct ChatMessage {
     char     callsign[12];
     char     plain[MAX_MSG_LEN + 1];
     char     cipher[MAX_MSG_LEN + 1];
+    char     timestamp[9];  /* "HH:MM:SS\0" — software clock from millis() */
     bool     sent;
     int      rssi;
-    uint16_t id;   /* unique ID for sent messages (0 = not tracked) */
-    uint8_t  ack;  /* MSG_ACK_* state                               */
+    uint16_t id;    /* unique ID for sent messages (0 = not tracked)       */
+    uint8_t  stage; /* MSG_STAGE_* pipeline stage; 0-4 = arrows, 5 = FAIL */
 };
 
 static const int MAX_VISIBLE = 8;
@@ -43,29 +44,43 @@ public:
     void addReceivedMessage(const char* callsign, const char* plain,
                             const char* cipher, int rssi)
     {
-        _push(callsign, plain, cipher, false, rssi, 0, 0);
+        char ts[9];
+        _getTimestamp(ts);
+        _push(callsign, plain, cipher, false, rssi, 0, 0, ts);
     }
 
-    /* Returns the assigned message ID for ACK tracking */
+    /* Returns the assigned message ID for stage tracking */
     uint16_t addSentMessage(const char* plain) {
         uint16_t id = _nextMsgId++;
         if (_nextMsgId == 0) _nextMsgId = 1;   /* wrap, skip 0 */
-        _push(_callsign, plain, "", true, 0, id, MSG_ACK_PENDING);
+        char ts[9];
+        _getTimestamp(ts);
+        _push(_callsign, plain, "", true, 0, id, MSG_STAGE_PENDING, ts);
         return id;
     }
 
-    /* Update ACK state for a sent message by ID.
-       Only advances state forward; FAILED can always be applied. */
-    void updateAck(uint16_t id, uint8_t newState) {
+    /* Update pipeline stage for a sent message by ID.
+       Stage only advances forward; FAILED can always be applied.
+       If cipher is non-null and the message has no cipher yet, store it. */
+    void updateStage(uint16_t id, uint8_t newStage, const char* cipher) {
         if (id == 0) return;
         for (int n = _msgCount - 1; n >= 0; n--) {
             int idx = (_msgHead + n) % MAX_MESSAGES;
             if (_msgs[idx].sent && _msgs[idx].id == id) {
-                if (newState == MSG_ACK_FAILED || newState > _msgs[idx].ack) {
-                    _msgs[idx].ack = newState;
+                bool changed = false;
+                if (newStage == MSG_STAGE_FAILED || newStage > _msgs[idx].stage) {
+                    _msgs[idx].stage = newStage;
+                    changed = true;
+                }
+                if (cipher && cipher[0] != '\0' && _msgs[idx].cipher[0] == '\0') {
+                    strncpy(_msgs[idx].cipher, cipher, sizeof(_msgs[idx].cipher) - 1);
+                    _msgs[idx].cipher[sizeof(_msgs[idx].cipher) - 1] = '\0';
+                    changed = true;
+                }
+                if (changed) {
                     int startN = (_msgCount > MAX_VISIBLE) ? (_msgCount - MAX_VISIBLE) : 0;
                     if (n >= startN) {
-                        _updateAckLabel(n - startN, newState);
+                        _updateSlot(n - startN, _msgs[idx]);
                     }
                 }
                 break;
@@ -141,13 +156,11 @@ public:
     }
 
 private:
-    /* ── Pool slot ── */
+    /* ── Pool slot — entire formatted line lives in one label ── */
     struct _Slot {
         lv_obj_t* row;
         lv_obj_t* bubble;
         lv_obj_t* mainLbl;
-        lv_obj_t* cipherLbl;
-        lv_obj_t* ackLbl;    /* progress indicator — only visible for sent msgs */
     };
 
     lv_obj_t*  _msgList        = nullptr;
@@ -291,7 +304,7 @@ private:
         lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START,
                               LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-        /* Console style: transparent full-width container, no border/radius */
+        /* Transparent full-width container per line — no border, no radius */
         lv_obj_t* bub = lv_obj_create(row);
         lv_obj_set_height(bub, LV_SIZE_CONTENT);
         lv_obj_set_width(bub, lv_pct(100));
@@ -301,32 +314,15 @@ private:
         lv_obj_set_style_border_width(bub, 0, 0);
         lv_obj_set_style_bg_opa(bub, LV_OPA_TRANSP, 0);
         lv_obj_clear_flag(bub, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_flex_flow(bub, LV_FLEX_FLOW_COLUMN);
 
+        /* Single label: arrow prefix + timestamp + callsign + PT + optional CT */
         lv_obj_t* mainLbl = lv_label_create(bub);
         lv_label_set_long_mode(mainLbl, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(mainLbl, lv_pct(100));
-        lv_obj_set_style_text_font(mainLbl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(mainLbl, &lv_font_montserrat_12, 0);
         lv_label_set_text(mainLbl, "");
 
-        lv_obj_t* cipherLbl = lv_label_create(bub);
-        lv_label_set_long_mode(cipherLbl, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(cipherLbl, lv_pct(100));
-        lv_obj_set_style_text_font(cipherLbl, &lv_font_montserrat_12, 0);
-        lv_obj_set_style_text_color(cipherLbl, lv_color_hex(CLR_PHOSPHOR_DIM), 0);
-        lv_label_set_text(cipherLbl, "");
-        lv_obj_add_flag(cipherLbl, LV_OBJ_FLAG_HIDDEN);
-
-        /* ACK progress indicator — only shown for sent messages */
-        lv_obj_t* ackLbl = lv_label_create(bub);
-        lv_label_set_long_mode(ackLbl, LV_LABEL_LONG_CLIP);
-        lv_obj_set_width(ackLbl, lv_pct(100));
-        lv_obj_set_style_text_font(ackLbl, &lv_font_montserrat_12, 0);
-        lv_obj_set_style_text_color(ackLbl, lv_color_hex(CLR_PHOSPHOR_DIM), 0);
-        lv_label_set_text(ackLbl, "");
-        lv_obj_add_flag(ackLbl, LV_OBJ_FLAG_HIDDEN);
-
-        _pool[i] = { row, bub, mainLbl, cipherLbl, ackLbl };
+        _pool[i] = { row, bub, mainLbl };
     }
 
     /* ─────────────────────────────────────────
@@ -384,23 +380,25 @@ private:
     ───────────────────────────────────────── */
     void _push(const char* callsign, const char* plain,
                const char* cipher, bool sent, int rssi,
-               uint16_t id, uint8_t ack)
+               uint16_t id, uint8_t stage, const char* timestamp)
     {
         if (_msgCount == MAX_MESSAGES) {
             _msgHead = (_msgHead + 1) % MAX_MESSAGES;
             _msgCount--;
         }
         int idx = (_msgHead + _msgCount) % MAX_MESSAGES;
-        strncpy(_msgs[idx].callsign, callsign, sizeof(_msgs[idx].callsign) - 1);
-        strncpy(_msgs[idx].plain,    plain,    sizeof(_msgs[idx].plain)    - 1);
-        strncpy(_msgs[idx].cipher,   cipher,   sizeof(_msgs[idx].cipher)   - 1);
-        _msgs[idx].callsign[sizeof(_msgs[idx].callsign)-1] = '\0';
-        _msgs[idx].plain[sizeof(_msgs[idx].plain)-1]       = '\0';
-        _msgs[idx].cipher[sizeof(_msgs[idx].cipher)-1]     = '\0';
-        _msgs[idx].sent = sent;
-        _msgs[idx].rssi = rssi;
-        _msgs[idx].id   = id;
-        _msgs[idx].ack  = ack;
+        strncpy(_msgs[idx].callsign,  callsign,  sizeof(_msgs[idx].callsign)  - 1);
+        strncpy(_msgs[idx].plain,     plain,     sizeof(_msgs[idx].plain)     - 1);
+        strncpy(_msgs[idx].cipher,    cipher,    sizeof(_msgs[idx].cipher)    - 1);
+        strncpy(_msgs[idx].timestamp, timestamp, sizeof(_msgs[idx].timestamp) - 1);
+        _msgs[idx].callsign[sizeof(_msgs[idx].callsign)-1]   = '\0';
+        _msgs[idx].plain[sizeof(_msgs[idx].plain)-1]         = '\0';
+        _msgs[idx].cipher[sizeof(_msgs[idx].cipher)-1]       = '\0';
+        _msgs[idx].timestamp[sizeof(_msgs[idx].timestamp)-1] = '\0';
+        _msgs[idx].sent  = sent;
+        _msgs[idx].rssi  = rssi;
+        _msgs[idx].id    = id;
+        _msgs[idx].stage = stage;
         _msgCount++;
         _redrawMessages();
     }
@@ -426,51 +424,64 @@ private:
         }
     }
 
-    void _updateSlot(int slot, const ChatMessage& m) {
-        _Slot& s = _pool[slot];
+    /* Software clock: seconds since boot formatted as HH:MM:SS.
+       Real-time sync is a future enhancement (GPS, NTP, manual set). */
+    static void _getTimestamp(char* buf) {
+        uint32_t s = millis() / 1000;
+        snprintf(buf, 9, "%02lu:%02lu:%02lu",
+                 (unsigned long)(s / 3600) % 24,
+                 (unsigned long)(s % 3600) / 60,
+                 (unsigned long)(s % 60));
+    }
 
-        /* Console: no background color, always left-aligned */
-        lv_obj_set_flex_align(s.row, LV_FLEX_ALIGN_START,
-                              LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-        char header[MAX_MSG_LEN + 16];
-        snprintf(header, sizeof(header), "<%s> %s", m.callsign, m.plain);
-        lv_label_set_text(s.mainLbl, header);
-        lv_obj_set_style_text_color(s.mainLbl,
-            lv_color_hex(m.sent ? CLR_PHOSPHOR : CLR_PHOSPHOR_MID), 0);
-
-        if (encEnabled && m.cipher[0] != '\0') {
-            char line[MAX_MSG_LEN + 4];
-            snprintf(line, sizeof(line), "\xe2\x86\xb3 %s", m.cipher);
-            lv_label_set_text(s.cipherLbl, line);
-            lv_obj_clear_flag(s.cipherLbl, LV_OBJ_FLAG_HIDDEN);
+    /* Build the full display line for one message.
+       Format (sent):     ">    HH:MM:SS <CS> PT: plain  CT: "cipher""
+       Format (received): "     HH:MM:SS <CS> PT: plain  CT: "cipher""
+       CT portion shown only when encOn and cipher is non-empty.
+       Arrow prefix is 5 chars wide to keep the timestamp column stable. */
+    static void _buildLine(char* buf, size_t sz,
+                           const ChatMessage& m, bool encOn)
+    {
+        const char* arrows;
+        if (!m.sent) {
+            arrows = "     ";   /* 5-space indent to align with sent prefix  */
         } else {
-            lv_label_set_text(s.cipherLbl, "");
-            lv_obj_add_flag(s.cipherLbl, LV_OBJ_FLAG_HIDDEN);
+            switch (m.stage) {
+                case MSG_STAGE_FAILED:    arrows = "x    "; break;
+                case MSG_STAGE_COMPLETE:  arrows = ">>>> "; break;
+                case MSG_STAGE_RECEIVED:  arrows = ">>>  "; break;
+                case MSG_STAGE_ENCRYPTED: arrows = ">>   "; break;
+                default:                  arrows = ">    "; break; /* 0 + 1 */
+            }
         }
-
-        /* ACK indicator — only for sent messages */
-        if (m.sent) {
-            _updateAckLabel(slot, m.ack);
+        bool showCt = encOn && m.cipher[0] != '\0';
+        if (showCt) {
+            snprintf(buf, sz, "%s%s <%s> PT: %s  CT: \"%s\"",
+                     arrows, m.timestamp, m.callsign, m.plain, m.cipher);
         } else {
-            lv_label_set_text(s.ackLbl, "");
-            lv_obj_add_flag(s.ackLbl, LV_OBJ_FLAG_HIDDEN);
+            snprintf(buf, sz, "%s%s <%s> PT: %s",
+                     arrows, m.timestamp, m.callsign, m.plain);
         }
     }
 
-    /* Update only the ACK label for an already-visible slot */
-    void _updateAckLabel(int slot, uint8_t ack) {
+    void _updateSlot(int slot, const ChatMessage& m) {
         _Slot& s = _pool[slot];
-        static const char*    labels[] = { "----", ">---", ">>--", ">>>-", ">>>>", "FAIL" };
-        static const uint32_t colors[] = {
-            CLR_PHOSPHOR_DIM, CLR_PHOSPHOR_DIM,
-            CLR_PHOSPHOR_MID, CLR_PHOSPHOR_MID,
-            CLR_PHOSPHOR, CLR_ACK_FAIL
-        };
-        uint8_t i = (ack <= MSG_ACK_FAILED) ? ack : MSG_ACK_FAILED;
-        lv_label_set_text(s.ackLbl, labels[i]);
-        lv_obj_set_style_text_color(s.ackLbl, lv_color_hex(colors[i]), 0);
-        lv_obj_clear_flag(s.ackLbl, LV_OBJ_FLAG_HIDDEN);
+
+        char line[MAX_MSG_LEN * 2 + 64];
+        _buildLine(line, sizeof(line), m, encEnabled);
+        lv_label_set_text(s.mainLbl, line);
+
+        uint32_t color;
+        if (!m.sent) {
+            color = CLR_PHOSPHOR_MID;
+        } else if (m.stage == MSG_STAGE_FAILED) {
+            color = CLR_STAGE_FAIL;
+        } else if (m.stage >= MSG_STAGE_COMPLETE) {
+            color = CLR_PHOSPHOR;
+        } else {
+            color = CLR_PHOSPHOR_DIM;
+        }
+        lv_obj_set_style_text_color(s.mainLbl, lv_color_hex(color), 0);
     }
 
     /* ─────────────────────────────────────────

@@ -14,7 +14,8 @@ struct HeltecCallbacks {
                  const char* cipher, int rssi, float snr)   = nullptr;
     void (*onStatus)(const char* radio, const char* key,
                      int rssi)                               = nullptr;
-    void (*onTxAck)(uint16_t id, uint8_t stage)             = nullptr;
+    void (*onTxAck)(uint16_t id, uint8_t stage,
+                    const char* cipher)                      = nullptr;
     void (*onRemoteAck)(uint16_t id)                        = nullptr;
 };
 
@@ -247,9 +248,10 @@ private:
             }
         } else if (strcmp(type, "tx_ack") == 0) {
             if (_cb.onTxAck) {
-                uint16_t    id    = doc["id"]    | (uint16_t)0;
-                const char* stage = doc["stage"] | "";
-                _cb.onTxAck(id, _stageToAck(stage));
+                uint16_t    id     = doc["id"]     | (uint16_t)0;
+                const char* stage  = doc["stage"]  | "";
+                const char* cipher = doc["cipher"] | "";
+                _cb.onTxAck(id, _stageToNum(stage), cipher);
             }
         } else if (strcmp(type, "remote_ack") == 0) {
             if (_cb.onRemoteAck) {
@@ -275,13 +277,14 @@ private:
         HELTEC_UART.flush();
     }
 
-    static uint8_t _stageToAck(const char* s) {
-        if (strcmp(s, "uart")      == 0) return MSG_ACK_UART;
-        if (strcmp(s, "radio")     == 0) return MSG_ACK_RADIO;
-        if (strcmp(s, "delivered") == 0) return MSG_ACK_DELIVERED;
-        if (strcmp(s, "fail")      == 0) return MSG_ACK_FAILED;
-        if (strcmp(s, "drop")      == 0) return MSG_ACK_FAILED;
-        return MSG_ACK_PENDING;
+    static uint8_t _stageToNum(const char* s) {
+        if (strcmp(s, "queued")      == 0) return MSG_STAGE_QUEUED;
+        if (strcmp(s, "encrypted")   == 0) return MSG_STAGE_ENCRYPTED;
+        if (strcmp(s, "transmitted") == 0) return MSG_STAGE_ENCRYPTED;  /* same display */
+        if (strcmp(s, "radio_ack")   == 0) return MSG_STAGE_COMPLETE;
+        if (strcmp(s, "fail")        == 0) return MSG_STAGE_FAILED;
+        if (strcmp(s, "drop")        == 0) return MSG_STAGE_FAILED;
+        return MSG_STAGE_PENDING;
     }
 
     static void _sanitise(const char* src, char* dst, size_t dstsz) {
