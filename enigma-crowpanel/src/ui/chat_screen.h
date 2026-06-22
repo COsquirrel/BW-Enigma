@@ -435,32 +435,41 @@ private:
     }
 
     /* Build the full display line for one message.
-       Format (sent):     ">    HH:MM:SS <CS> PT: plain  CT: "cipher""
-       Format (received): "     HH:MM:SS <CS> PT: plain  CT: "cipher""
-       CT portion shown only when encOn and cipher is non-empty.
-       Arrow prefix is 5 chars wide to keep the timestamp column stable. */
+       Sent format:     ">>>- HH:MM:SS <CS> PT: plain  CT: "cipher""
+       Received format: "HH:MM:SS <CS> PT: plain  CT: "cipher""
+       4-char dash-fill prefix shows pipeline progress on sent messages only.
+       CT portion shown only when encOn and cipher is non-empty.             */
     static void _buildLine(char* buf, size_t sz,
                            const ChatMessage& m, bool encOn)
     {
-        const char* arrows;
-        if (!m.sent) {
-            arrows = "     ";   /* 5-space indent to align with sent prefix  */
-        } else {
-            switch (m.stage) {
-                case MSG_STAGE_FAILED:    arrows = "x    "; break;
-                case MSG_STAGE_COMPLETE:  arrows = ">>>> "; break;
-                case MSG_STAGE_RECEIVED:  arrows = ">>>  "; break;
-                case MSG_STAGE_ENCRYPTED: arrows = ">>   "; break;
-                default:                  arrows = ">    "; break; /* 0 + 1 */
-            }
-        }
         bool showCt = encOn && m.cipher[0] != '\0';
-        if (showCt) {
-            snprintf(buf, sz, "%s%s <%s> PT: %s  CT: \"%s\"",
-                     arrows, m.timestamp, m.callsign, m.plain, m.cipher);
+        if (!m.sent) {
+            /* Received: no prefix, timestamp starts at column 0 */
+            if (showCt) {
+                snprintf(buf, sz, "%s <%s> PT: %s  CT: \"%s\"",
+                         m.timestamp, m.callsign, m.plain, m.cipher);
+            } else {
+                snprintf(buf, sz, "%s <%s> PT: %s",
+                         m.timestamp, m.callsign, m.plain);
+            }
         } else {
-            snprintf(buf, sz, "%s%s <%s> PT: %s",
-                     arrows, m.timestamp, m.callsign, m.plain);
+            /* Sent: 4-char dash-fill indicator + space before timestamp */
+            const char* ind;
+            switch (m.stage) {
+                case MSG_STAGE_FAILED:    ind = "FAIL"; break;
+                case MSG_STAGE_COMPLETE:  ind = ">>>>"; break;
+                case MSG_STAGE_RADIO_ACK: ind = ">>>-"; break;
+                case MSG_STAGE_ENCRYPTED: ind = ">>--"; break;
+                case MSG_STAGE_QUEUED:    ind = ">---"; break;
+                default:                  ind = "----"; break; /* PENDING */
+            }
+            if (showCt) {
+                snprintf(buf, sz, "%s %s <%s> PT: %s  CT: \"%s\"",
+                         ind, m.timestamp, m.callsign, m.plain, m.cipher);
+            } else {
+                snprintf(buf, sz, "%s %s <%s> PT: %s",
+                         ind, m.timestamp, m.callsign, m.plain);
+            }
         }
     }
 
@@ -477,9 +486,11 @@ private:
         } else if (m.stage == MSG_STAGE_FAILED) {
             color = CLR_STAGE_FAIL;
         } else if (m.stage >= MSG_STAGE_COMPLETE) {
-            color = CLR_PHOSPHOR;
+            color = CLR_PHOSPHOR;           /* >>>> bright: far screen posted */
+        } else if (m.stage >= MSG_STAGE_RADIO_ACK) {
+            color = CLR_PHOSPHOR_MID;       /* >>>- medium: radio layer acked */
         } else {
-            color = CLR_PHOSPHOR_DIM;
+            color = CLR_PHOSPHOR_DIM;       /* ---- >--- >>-- still in flight */
         }
         lv_obj_set_style_text_color(s.mainLbl, lv_color_hex(color), 0);
     }

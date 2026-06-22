@@ -281,7 +281,7 @@ private:
         if (strcmp(s, "queued")      == 0) return MSG_STAGE_QUEUED;
         if (strcmp(s, "encrypted")   == 0) return MSG_STAGE_ENCRYPTED;
         if (strcmp(s, "transmitted") == 0) return MSG_STAGE_ENCRYPTED;  /* same display */
-        if (strcmp(s, "radio_ack")   == 0) return MSG_STAGE_COMPLETE;
+        if (strcmp(s, "radio_ack")   == 0) return MSG_STAGE_RADIO_ACK;
         if (strcmp(s, "fail")        == 0) return MSG_STAGE_FAILED;
         if (strcmp(s, "drop")        == 0) return MSG_STAGE_FAILED;
         return MSG_STAGE_PENDING;

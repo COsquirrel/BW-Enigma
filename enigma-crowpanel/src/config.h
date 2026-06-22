@@ -52,13 +52,14 @@
 
 /* ── Per-message pipeline stages ────────────────────────────────────────────
    Stored in ChatMessage::stage; driven by tx_ack / remote_ack from Heltec.
-   Stage value equals the arrow count shown in the UI prefix (0 and 1 → ">").
-   Stage 3 (">>>") is reserved for future far-side OTA ack.                  */
+   Display prefix: ---- >--- >>-- >>>- >>>> FAIL
+   Stage 4 (>>>>) requires a remote_ack OTA packet back from the far Heltec
+   (proxy for "far screen posted" until true display-ack is wired up).       */
 #define MSG_STAGE_PENDING   0   /* created locally, no Heltec reply yet      */
 #define MSG_STAGE_QUEUED    1   /* Heltec received via UART                  */
 #define MSG_STAGE_ENCRYPTED 2   /* Heltec encrypted + transmitted over air   */
-#define MSG_STAGE_RECEIVED  3   /* far side received — reserved, future OTA  */
-#define MSG_STAGE_COMPLETE  4   /* radio_ack — delivery confirmed            */
+#define MSG_STAGE_RADIO_ACK 3   /* remote MAC acked at radio layer           */
+#define MSG_STAGE_COMPLETE  4   /* remote_ack — far Heltec confirmed receipt */
 #define MSG_STAGE_FAILED    5   /* any failure                               */
 #define CLR_STAGE_FAIL      0x8B0000  /* muted red for FAIL display */
 
