@@ -9,51 +9,120 @@ typedef void (*open_settings_cb_t)();
 
 /* ── Message store ── */
 struct ChatMessage {
-    char callsign[12];
-    char plain[MAX_MSG_LEN + 1];
-    char cipher[MAX_MSG_LEN + 1];
-    bool sent;
-    int  rssi;
+    char     callsign[12];
+    char     plain[MAX_MSG_LEN + 1];
+    char     cipher[MAX_MSG_LEN + 1];
+    bool     sent;
+    int      rssi;
+    uint16_t id;   /* unique ID for sent messages (0 = not tracked) */
+    uint8_t  ack;  /* MSG_ACK_* state                               */
 };
+
+static const int MAX_VISIBLE = 8;
 
 /* ════════════════════════════════════════════════════════════════
    ChatScreen
    ════════════════════════════════════════════════════════════════ */
 class ChatScreen {
 public:
-    /* Set before calling create() */
     send_cb_t          onSend     = nullptr;
     open_settings_cb_t onSettings = nullptr;
-
     bool encEnabled = false;
 
     void create(lv_obj_t* parent) {
-        /* Singleton pointer for keyboard static callbacks */
         s_instance = this;
-
         _buildStatusBar(parent);
         _buildMsgArea(parent);
         _buildInputBar(parent);
-
         lv_coord_t kbY = DISP_H - KEYBOARD_H;
         _kb.create(parent, kbY, _kbCharCb, _kbActionCb);
+        _updateEncButton();
     }
 
     /* ── Public API ── */
     void addReceivedMessage(const char* callsign, const char* plain,
                             const char* cipher, int rssi)
     {
-        _push(callsign, plain, cipher, false, rssi);
+        _push(callsign, plain, cipher, false, rssi, 0, 0);
     }
 
-    void addSentMessage(const char* plain) {
-        _push(_callsign, plain, "", true, 0);
+    /* Returns the assigned message ID for ACK tracking */
+    uint16_t addSentMessage(const char* plain) {
+        uint16_t id = _nextMsgId++;
+        if (_nextMsgId == 0) _nextMsgId = 1;   /* wrap, skip 0 */
+        _push(_callsign, plain, "", true, 0, id, MSG_ACK_PENDING);
+        return id;
+    }
+
+    /* Update ACK state for a sent message by ID.
+       Only advances state forward; FAILED can always be applied. */
+    void updateAck(uint16_t id, uint8_t newState) {
+        if (id == 0) return;
+        for (int n = _msgCount - 1; n >= 0; n--) {
+            int idx = (_msgHead + n) % MAX_MESSAGES;
+            if (_msgs[idx].sent && _msgs[idx].id == id) {
+                if (newState == MSG_ACK_FAILED || newState > _msgs[idx].ack) {
+                    _msgs[idx].ack = newState;
+                    int startN = (_msgCount > MAX_VISIBLE) ? (_msgCount - MAX_VISIBLE) : 0;
+                    if (n >= startN) {
+                        _updateAckLabel(n - startN, newState);
+                    }
+                }
+                break;
+            }
+        }
     }
 
     void updateRssi(int rssi) {
         char buf[16];
         snprintf(buf, sizeof(buf), "RSSI:%d", rssi);
         lv_label_set_text(_rssiLbl, buf);
+    }
+
+    /* Call from loop() — updates RSSI display and heartbeat dot health */
+    void checkLinkHealth(uint32_t secsSinceRx, uint32_t secsSinceByte,
+                         uint32_t uartBytes, uint32_t jsonOk,
+                         uint32_t jsonErr, uint32_t lineDrops,
+                         uint32_t pingTx, uint32_t pongRx,
+                         uint32_t pingRx, uint32_t pongTx) {
+        if (!_hbDot) return;
+        /* Dot goes red after 30 s without a status packet */
+        if (secsSinceRx >= 30) {
+            lv_obj_set_style_bg_color(_hbDot, lv_color_hex(CLR_LINK_DOWN), 0);
+            lv_obj_set_style_opa(_hbDot, 80, 0);
+        }
+        /* Show raw byte/JSON counters so UART can be diagnosed without serial. */
+        if (pingTx > 0 || pongRx > 0 || pingRx > 0 || pongTx > 0) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "P:%lu/%lu H:%lu/%lu",
+                     (unsigned long)pongRx, (unsigned long)pingTx,
+                     (unsigned long)pingRx, (unsigned long)pongTx);
+            lv_label_set_text(_rssiLbl, buf);
+        } else if (secsSinceRx >= 5) {
+            char buf[32];
+            uint32_t bad = jsonErr + lineDrops;
+            if (uartBytes == 0) {
+                snprintf(buf, sizeof(buf), "NO UART");
+            } else if (jsonOk > 0 && bad > 0) {
+                snprintf(buf, sizeof(buf), "OK:%lu E:%lu",
+                         (unsigned long)jsonOk, (unsigned long)bad);
+            } else if (jsonOk > 0) {
+                snprintf(buf, sizeof(buf), "OK:%lu R:%lus",
+                         (unsigned long)jsonOk, (unsigned long)secsSinceByte);
+            } else {
+                snprintf(buf, sizeof(buf), "B:%lu E:%lu",
+                         (unsigned long)uartBytes, (unsigned long)bad);
+            }
+            lv_label_set_text(_rssiLbl, buf);
+        }
+    }
+
+    /* Call when a valid status packet arrives from Heltec */
+    void notifyStatusReceived() {
+        if (!_hbDot) return;
+        _lastStatusMs = millis();
+        lv_obj_set_style_bg_color(_hbDot, lv_color_hex(CLR_PHOSPHOR), 0);
+        lv_obj_set_style_opa(_hbDot, LV_OPA_COVER, 0);
     }
 
     void updateKeyIndicator(const char* keyStr) {
@@ -72,23 +141,39 @@ public:
     }
 
 private:
-    lv_obj_t* _msgList  = nullptr;
-    lv_obj_t* _inputTa  = nullptr;
-    lv_obj_t* _encBtn   = nullptr;
-    lv_obj_t* _encBtnLbl= nullptr;
-    lv_obj_t* _rssiLbl  = nullptr;
-    lv_obj_t* _keyLbl   = nullptr;
-    lv_obj_t* _keyboardTarget = nullptr;
+    /* ── Pool slot ── */
+    struct _Slot {
+        lv_obj_t* row;
+        lv_obj_t* bubble;
+        lv_obj_t* mainLbl;
+        lv_obj_t* cipherLbl;
+        lv_obj_t* ackLbl;    /* progress indicator — only visible for sent msgs */
+    };
 
-    char         _callsign[12]     = DEFAULT_CALLSIGN;
-    ChatMessage  _msgs[MAX_MESSAGES];
-    int          _msgCount = 0;
-    int          _msgHead  = 0;
+    lv_obj_t*  _msgList        = nullptr;
+    lv_obj_t*  _inputTa        = nullptr;
+    lv_obj_t*  _encBtn         = nullptr;
+    lv_obj_t*  _encBtnLbl      = nullptr;
+    lv_obj_t*  _rssiLbl        = nullptr;
+    lv_obj_t*  _keyLbl         = nullptr;
+    lv_obj_t*  _hbDot          = nullptr;   /* heartbeat indicator */
+    lv_obj_t*  _keyboardTarget = nullptr;
+
+    char        _callsign[12]  = DEFAULT_CALLSIGN;
+    ChatMessage _msgs[MAX_MESSAGES];
+    int         _msgCount  = 0;
+    int         _msgHead   = 0;
+    uint16_t    _nextMsgId = 1;   /* incremented per sent message; 0 is reserved */
+
+    uint32_t    _lastStatusMs = 0;
+
+    _Slot       _pool[MAX_VISIBLE];
 
     EnigmaKeyboard _kb;
 
+
     /* ─────────────────────────────────────────
-       Status bar
+       Status bar + heartbeat dot
     ───────────────────────────────────────── */
     void _buildStatusBar(lv_obj_t* parent) {
         lv_obj_t* bar = lv_obj_create(parent);
@@ -96,21 +181,32 @@ private:
         lv_obj_set_pos(bar, 0, 0);
         _applyBarStyle(bar);
 
-        /* Gear */
+        /* Gear / settings */
         lv_obj_t* gear = lv_btn_create(bar);
         lv_obj_set_size(gear, 30, STATUS_BAR_H);
         lv_obj_set_pos(gear, 0, 0);
         _applyIconBtnStyle(gear);
         lv_obj_t* gearLbl = lv_label_create(gear);
         lv_label_set_text(gearLbl, LV_SYMBOL_SETTINGS);
-        lv_obj_set_style_text_color(gearLbl, lv_color_hex(CLR_AMBER), 0);
+        lv_obj_set_style_text_color(gearLbl, lv_color_hex(CLR_PHOSPHOR), 0);
         lv_obj_center(gearLbl);
         lv_obj_add_event_cb(gear, _gearCb, LV_EVENT_CLICKED, this);
+
+        /* Heartbeat dot — 10×10 circle, right of gear */
+        _hbDot = lv_obj_create(bar);
+        lv_obj_set_size(_hbDot, 10, 10);
+        lv_obj_set_pos(_hbDot, 36, (STATUS_BAR_H - 10) / 2);
+        lv_obj_set_style_bg_color(_hbDot, lv_color_hex(CLR_PHOSPHOR), 0);
+        lv_obj_set_style_bg_opa(_hbDot, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(_hbDot, 0, 0);
+        lv_obj_set_style_radius(_hbDot, 5, 0);   /* circle */
+        lv_obj_set_style_opa(_hbDot, 40, 0);      /* starts dim — not yet connected */
+        lv_obj_clear_flag(_hbDot, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
 
         /* Title */
         lv_obj_t* title = lv_label_create(bar);
         lv_label_set_text(title, "BADGER WORKS ENIGMA");
-        lv_obj_set_style_text_color(title, lv_color_hex(CLR_AMBER), 0);
+        lv_obj_set_style_text_color(title, lv_color_hex(CLR_PHOSPHOR), 0);
         lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
         lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
 
@@ -118,10 +214,13 @@ private:
         _encBtn = lv_btn_create(bar);
         lv_obj_set_size(_encBtn, 46, STATUS_BAR_H - 6);
         lv_obj_align(_encBtn, LV_ALIGN_RIGHT_MID, -162, 0);
-        _applySmallBtnStyle(_encBtn, false);
+        lv_obj_set_style_radius(_encBtn, 4, 0);
+        lv_obj_set_style_pad_all(_encBtn, 2, 0);
+        lv_obj_set_style_border_color(_encBtn, lv_color_hex(CLR_PHOSPHOR), 0);
+        lv_obj_set_style_border_width(_encBtn, 1, 0);
+        lv_obj_set_style_bg_color(_encBtn, lv_color_hex(CLR_PHOSPHOR), LV_STATE_PRESSED);
         _encBtnLbl = lv_label_create(_encBtn);
         lv_label_set_text(_encBtnLbl, "ENC");
-        lv_obj_set_style_text_color(_encBtnLbl, lv_color_hex(CLR_AMBER_DIM), 0);
         lv_obj_set_style_text_font(_encBtnLbl, &lv_font_montserrat_12, 0);
         lv_obj_center(_encBtnLbl);
         lv_obj_add_event_cb(_encBtn, _encCb, LV_EVENT_CLICKED, this);
@@ -129,27 +228,28 @@ private:
         /* KEY indicator */
         _keyLbl = lv_label_create(bar);
         lv_label_set_text(_keyLbl, "KEY:---");
-        lv_obj_set_style_text_color(_keyLbl, lv_color_hex(CLR_AMBER_DIM), 0);
+        lv_obj_set_style_text_color(_keyLbl, lv_color_hex(CLR_PHOSPHOR_DIM), 0);
         lv_obj_set_style_text_font(_keyLbl, &lv_font_montserrat_12, 0);
         lv_obj_align(_keyLbl, LV_ALIGN_RIGHT_MID, -90, 0);
 
-        /* RSSI indicator */
+        /* RSSI / link-age */
         _rssiLbl = lv_label_create(bar);
         lv_label_set_text(_rssiLbl, "RSSI:---");
-        lv_obj_set_style_text_color(_rssiLbl, lv_color_hex(CLR_AMBER_DIM), 0);
+        lv_obj_set_style_text_color(_rssiLbl, lv_color_hex(CLR_PHOSPHOR_DIM), 0);
         lv_obj_set_style_text_font(_rssiLbl, &lv_font_montserrat_12, 0);
         lv_obj_align(_rssiLbl, LV_ALIGN_RIGHT_MID, -2, 0);
 
-        /* Bottom border */
+        /* Separator line */
         lv_obj_t* line = lv_obj_create(parent);
         lv_obj_set_size(line, DISP_W, 1);
         lv_obj_set_pos(line, 0, STATUS_BAR_H);
-        lv_obj_set_style_bg_color(line, lv_color_hex(CLR_AMBER), 0);
+        lv_obj_set_style_bg_color(line, lv_color_hex(CLR_PHOSPHOR_DIM), 0);
         lv_obj_set_style_border_width(line, 0, 0);
     }
 
     /* ─────────────────────────────────────────
-       Message list
+       Message area — flex column, scrollable,
+       pre-allocated bubble pool
     ───────────────────────────────────────── */
     void _buildMsgArea(lv_obj_t* parent) {
         _msgList = lv_obj_create(parent);
@@ -159,8 +259,74 @@ private:
         lv_obj_set_style_bg_opa(_msgList, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(_msgList, 0, 0);
         lv_obj_set_style_radius(_msgList, 0, 0);
-        lv_obj_set_style_pad_all(_msgList, 0, 0);
-        lv_obj_clear_flag(_msgList, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_pad_all(_msgList, 4, 0);
+        lv_obj_set_style_pad_row(_msgList, 2, 0);   /* tighter console line spacing */
+        lv_obj_set_flex_flow(_msgList, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(_msgList,
+                              LV_FLEX_ALIGN_END,
+                              LV_FLEX_ALIGN_START,
+                              LV_FLEX_ALIGN_START);
+        lv_obj_add_flag(_msgList, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_scroll_dir(_msgList, LV_DIR_VER);
+        lv_obj_set_scrollbar_mode(_msgList, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_clear_flag(_msgList, LV_OBJ_FLAG_SCROLL_ELASTIC);
+        lv_obj_clear_flag(_msgList, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+        lv_obj_clear_flag(_msgList, LV_OBJ_FLAG_SCROLL_CHAIN);
+
+        for (int i = 0; i < MAX_VISIBLE; i++) {
+            _allocSlot(i);
+            lv_obj_add_flag(_pool[i].row, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    void _allocSlot(int i) {
+        lv_obj_t* row = lv_obj_create(_msgList);
+        lv_obj_set_width(row, lv_pct(100));
+        lv_obj_set_height(row, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START,
+                              LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+        /* Console style: transparent full-width container, no border/radius */
+        lv_obj_t* bub = lv_obj_create(row);
+        lv_obj_set_height(bub, LV_SIZE_CONTENT);
+        lv_obj_set_width(bub, lv_pct(100));
+        lv_obj_set_style_radius(bub, 0, 0);
+        lv_obj_set_style_pad_all(bub, 1, 0);
+        lv_obj_set_style_pad_left(bub, 4, 0);
+        lv_obj_set_style_border_width(bub, 0, 0);
+        lv_obj_set_style_bg_opa(bub, LV_OPA_TRANSP, 0);
+        lv_obj_clear_flag(bub, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_flex_flow(bub, LV_FLEX_FLOW_COLUMN);
+
+        lv_obj_t* mainLbl = lv_label_create(bub);
+        lv_label_set_long_mode(mainLbl, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(mainLbl, lv_pct(100));
+        lv_obj_set_style_text_font(mainLbl, &lv_font_montserrat_14, 0);
+        lv_label_set_text(mainLbl, "");
+
+        lv_obj_t* cipherLbl = lv_label_create(bub);
+        lv_label_set_long_mode(cipherLbl, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(cipherLbl, lv_pct(100));
+        lv_obj_set_style_text_font(cipherLbl, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(cipherLbl, lv_color_hex(CLR_PHOSPHOR_DIM), 0);
+        lv_label_set_text(cipherLbl, "");
+        lv_obj_add_flag(cipherLbl, LV_OBJ_FLAG_HIDDEN);
+
+        /* ACK progress indicator — only shown for sent messages */
+        lv_obj_t* ackLbl = lv_label_create(bub);
+        lv_label_set_long_mode(ackLbl, LV_LABEL_LONG_CLIP);
+        lv_obj_set_width(ackLbl, lv_pct(100));
+        lv_obj_set_style_text_font(ackLbl, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(ackLbl, lv_color_hex(CLR_PHOSPHOR_DIM), 0);
+        lv_label_set_text(ackLbl, "");
+        lv_obj_add_flag(ackLbl, LV_OBJ_FLAG_HIDDEN);
+
+        _pool[i] = { row, bub, mainLbl, cipherLbl, ackLbl };
     }
 
     /* ─────────────────────────────────────────
@@ -169,11 +335,10 @@ private:
     void _buildInputBar(lv_obj_t* parent) {
         lv_coord_t y = STATUS_BAR_H + 1 + MSG_AREA_H;
 
-        /* Top border line */
         lv_obj_t* topLine = lv_obj_create(parent);
         lv_obj_set_size(topLine, DISP_W, 1);
         lv_obj_set_pos(topLine, 0, y);
-        lv_obj_set_style_bg_color(topLine, lv_color_hex(CLR_AMBER), 0);
+        lv_obj_set_style_bg_color(topLine, lv_color_hex(CLR_PHOSPHOR_DIM), 0);
         lv_obj_set_style_border_width(topLine, 0, 0);
 
         lv_obj_t* bar = lv_obj_create(parent);
@@ -181,14 +346,12 @@ private:
         lv_obj_set_pos(bar, 0, y + 1);
         _applyBarStyle(bar);
 
-        /* Prompt char */
         lv_obj_t* prompt = lv_label_create(bar);
         lv_label_set_text(prompt, ">");
-        lv_obj_set_style_text_color(prompt, lv_color_hex(CLR_AMBER), 0);
+        lv_obj_set_style_text_color(prompt, lv_color_hex(CLR_PHOSPHOR), 0);
         lv_obj_set_style_text_font(prompt, &lv_font_montserrat_16, 0);
         lv_obj_align(prompt, LV_ALIGN_LEFT_MID, 6, 0);
 
-        /* Text area */
         _inputTa = lv_textarea_create(bar);
         _keyboardTarget = _inputTa;
         lv_obj_set_size(_inputTa, DISP_W - 100, INPUT_BAR_H - 8);
@@ -197,31 +360,31 @@ private:
         lv_textarea_set_max_length(_inputTa, MAX_MSG_LEN);
         lv_textarea_set_placeholder_text(_inputTa, "type a message...");
         lv_obj_set_style_bg_color(_inputTa, lv_color_hex(CLR_BG), 0);
-        lv_obj_set_style_text_color(_inputTa, lv_color_hex(CLR_AMBER), 0);
-        lv_obj_set_style_border_color(_inputTa, lv_color_hex(CLR_AMBER), 0);
+        lv_obj_set_style_text_color(_inputTa, lv_color_hex(CLR_PHOSPHOR), 0);
+        lv_obj_set_style_border_color(_inputTa, lv_color_hex(CLR_PHOSPHOR_MID), 0);
         lv_obj_set_style_border_width(_inputTa, 1, 0);
-        lv_obj_set_style_radius(_inputTa, 3, 0);
+        lv_obj_set_style_radius(_inputTa, 0, 0);   /* square corners for console */
         lv_obj_set_style_pad_ver(_inputTa, 2, 0);
         lv_obj_set_style_pad_hor(_inputTa, 6, 0);
 
-        /* SEND button */
         lv_obj_t* sendBtn = lv_btn_create(bar);
         lv_obj_set_size(sendBtn, 64, INPUT_BAR_H - 8);
         lv_obj_align(sendBtn, LV_ALIGN_RIGHT_MID, -4, 0);
-        _applySmallBtnStyle(sendBtn, true);
+        _applySmallBtnStyle(sendBtn);
         lv_obj_t* sendLbl = lv_label_create(sendBtn);
         lv_label_set_text(sendLbl, "SEND");
-        lv_obj_set_style_text_color(sendLbl, lv_color_hex(CLR_AMBER), 0);
+        lv_obj_set_style_text_color(sendLbl, lv_color_hex(CLR_PHOSPHOR), 0);
         lv_obj_set_style_text_font(sendLbl, &lv_font_montserrat_14, 0);
         lv_obj_center(sendLbl);
         lv_obj_add_event_cb(sendBtn, _sendBtnCb, LV_EVENT_CLICKED, this);
     }
 
     /* ─────────────────────────────────────────
-       Message rendering
+       Ring buffer push
     ───────────────────────────────────────── */
     void _push(const char* callsign, const char* plain,
-               const char* cipher, bool sent, int rssi)
+               const char* cipher, bool sent, int rssi,
+               uint16_t id, uint8_t ack)
     {
         if (_msgCount == MAX_MESSAGES) {
             _msgHead = (_msgHead + 1) % MAX_MESSAGES;
@@ -236,97 +399,96 @@ private:
         _msgs[idx].cipher[sizeof(_msgs[idx].cipher)-1]     = '\0';
         _msgs[idx].sent = sent;
         _msgs[idx].rssi = rssi;
+        _msgs[idx].id   = id;
+        _msgs[idx].ack  = ack;
         _msgCount++;
-
         _redrawMessages();
     }
 
+    /* ─────────────────────────────────────────
+       Pool-based redraw
+    ───────────────────────────────────────── */
     void _redrawMessages() {
-        lv_obj_clean(_msgList);
+        int startN   = (_msgCount > MAX_VISIBLE) ? (_msgCount - MAX_VISIBLE) : 0;
+        int visCount = _msgCount - startN;
 
-        lv_coord_t y = MSG_AREA_H - 6;
-        for (int n = _msgCount - 1; n >= 0; n--) {
-            int idx = (_msgHead + n) % MAX_MESSAGES;
-            lv_obj_t* row = _renderMsg(_msgs[idx]);
-            lv_obj_update_layout(row);
-
-            lv_coord_t h = lv_obj_get_height(row);
-            y -= h;
-            if (y < 0) {
-                lv_obj_del(row);
-                break;
+        for (int slot = 0; slot < MAX_VISIBLE; slot++) {
+            if (slot < visCount) {
+                int idx = (_msgHead + startN + slot) % MAX_MESSAGES;
+                _updateSlot(slot, _msgs[idx]);
+                lv_obj_clear_flag(_pool[slot].row, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_add_flag(_pool[slot].row, LV_OBJ_FLAG_HIDDEN);
             }
-
-            lv_obj_set_pos(row, 0, y);
-            y -= 4;
+        }
+        if (visCount > 0) {
+            lv_obj_scroll_to_view(_pool[visCount - 1].row, LV_ANIM_OFF);
         }
     }
 
-    lv_obj_t* _renderMsg(const ChatMessage& m) {
-        /* Row: full-width transparent container */
-        lv_obj_t* row = lv_obj_create(_msgList);
-        lv_obj_set_width(row, DISP_W);
-        lv_obj_set_height(row, LV_SIZE_CONTENT);
-        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_style_pad_hor(row, 6, 0);
-        lv_obj_set_style_pad_ver(row, 2, 0);
-        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(row,
-                              m.sent ? LV_FLEX_ALIGN_END : LV_FLEX_ALIGN_START,
-                              LV_FLEX_ALIGN_CENTER,
-                              LV_FLEX_ALIGN_CENTER);
+    void _updateSlot(int slot, const ChatMessage& m) {
+        _Slot& s = _pool[slot];
 
-        /* Bubble */
-        lv_obj_t* bub = lv_obj_create(row);
-        lv_obj_set_height(bub, LV_SIZE_CONTENT);
-        lv_obj_set_width(bub, (lv_coord_t)(DISP_W * 0.70f));
-        lv_obj_set_style_bg_color(bub,
-            lv_color_hex(m.sent ? CLR_BUBBLE_SENT : CLR_BUBBLE_RECV), 0);
-        lv_obj_set_style_bg_opa(bub, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_color(bub, lv_color_hex(CLR_AMBER), 0);
-        lv_obj_set_style_border_width(bub, 1, 0);
-        lv_obj_set_style_radius(bub, 6, 0);
-        lv_obj_set_style_pad_all(bub, 6, 0);
-        lv_obj_clear_flag(bub, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_flex_flow(bub, LV_FLEX_FLOW_COLUMN);
+        /* Console: no background color, always left-aligned */
+        lv_obj_set_flex_align(s.row, LV_FLEX_ALIGN_START,
+                              LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-        /* Main text: <CALLSIGN> message */
         char header[MAX_MSG_LEN + 16];
         snprintf(header, sizeof(header), "<%s> %s", m.callsign, m.plain);
+        lv_label_set_text(s.mainLbl, header);
+        lv_obj_set_style_text_color(s.mainLbl,
+            lv_color_hex(m.sent ? CLR_PHOSPHOR : CLR_PHOSPHOR_MID), 0);
 
-        lv_obj_t* mainLbl = lv_label_create(bub);
-        lv_label_set_long_mode(mainLbl, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(mainLbl, lv_pct(100));
-        lv_label_set_text(mainLbl, header);
-        lv_obj_set_style_text_color(mainLbl,
-            lv_color_hex(m.sent ? CLR_AMBER : CLR_TEXT_RECV), 0);
-        lv_obj_set_style_text_font(mainLbl, &lv_font_montserrat_14, 0);
-
-        /* Cipher line (ENC on, non-empty cipher) */
         if (encEnabled && m.cipher[0] != '\0') {
             char line[MAX_MSG_LEN + 4];
-            snprintf(line, sizeof(line), "\xe2\x86\xb3 %s", m.cipher); /* ↳ */
-            lv_obj_t* cLbl = lv_label_create(bub);
-            lv_label_set_long_mode(cLbl, LV_LABEL_LONG_WRAP);
-            lv_obj_set_width(cLbl, lv_pct(100));
-            lv_label_set_text(cLbl, line);
-            lv_obj_set_style_text_color(cLbl, lv_color_hex(CLR_AMBER_DIM), 0);
-            lv_obj_set_style_text_font(cLbl, &lv_font_montserrat_12, 0);
+            snprintf(line, sizeof(line), "\xe2\x86\xb3 %s", m.cipher);
+            lv_label_set_text(s.cipherLbl, line);
+            lv_obj_clear_flag(s.cipherLbl, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_label_set_text(s.cipherLbl, "");
+            lv_obj_add_flag(s.cipherLbl, LV_OBJ_FLAG_HIDDEN);
         }
 
-        return row;
+        /* ACK indicator — only for sent messages */
+        if (m.sent) {
+            _updateAckLabel(slot, m.ack);
+        } else {
+            lv_label_set_text(s.ackLbl, "");
+            lv_obj_add_flag(s.ackLbl, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    /* Update only the ACK label for an already-visible slot */
+    void _updateAckLabel(int slot, uint8_t ack) {
+        _Slot& s = _pool[slot];
+        static const char*    labels[] = { "----", ">---", ">>--", ">>>-", ">>>>", "FAIL" };
+        static const uint32_t colors[] = {
+            CLR_PHOSPHOR_DIM, CLR_PHOSPHOR_DIM,
+            CLR_PHOSPHOR_MID, CLR_PHOSPHOR_MID,
+            CLR_PHOSPHOR, CLR_ACK_FAIL
+        };
+        uint8_t i = (ack <= MSG_ACK_FAILED) ? ack : MSG_ACK_FAILED;
+        lv_label_set_text(s.ackLbl, labels[i]);
+        lv_obj_set_style_text_color(s.ackLbl, lv_color_hex(colors[i]), 0);
+        lv_obj_clear_flag(s.ackLbl, LV_OBJ_FLAG_HIDDEN);
     }
 
     /* ─────────────────────────────────────────
-       Send
+       ENC button visual state
     ───────────────────────────────────────── */
-    void _doSend() {
-        const char* txt = lv_textarea_get_text(_inputTa);
-        if (!txt || txt[0] == '\0') return;
-        if (onSend) onSend(txt);
-        lv_textarea_set_text(_inputTa, "");
+    void _updateEncButton() {
+        if (!_encBtn) return;
+        if (encEnabled) {
+            /* Solid phosphor fill = encryption ON */
+            lv_obj_set_style_bg_color(_encBtn, lv_color_hex(CLR_PHOSPHOR), 0);
+            lv_obj_set_style_bg_opa(_encBtn, LV_OPA_COVER, 0);
+            lv_obj_set_style_text_color(_encBtnLbl, lv_color_hex(0x000000), 0);
+        } else {
+            /* Outlined on black = encryption OFF */
+            lv_obj_set_style_bg_color(_encBtn, lv_color_hex(CLR_KEY_BG), 0);
+            lv_obj_set_style_bg_opa(_encBtn, LV_OPA_COVER, 0);
+            lv_obj_set_style_text_color(_encBtnLbl, lv_color_hex(CLR_PHOSPHOR_DIM), 0);
+        }
     }
 
     /* ─────────────────────────────────────────
@@ -343,18 +505,19 @@ private:
 
     static void _applyIconBtnStyle(lv_obj_t* btn) {
         lv_obj_set_style_bg_color(btn, lv_color_hex(CLR_STATUS_BG), 0);
-        lv_obj_set_style_bg_color(btn, lv_color_hex(CLR_AMBER), LV_STATE_PRESSED);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(CLR_PHOSPHOR_DIM), LV_STATE_PRESSED);
         lv_obj_set_style_border_width(btn, 0, 0);
         lv_obj_set_style_radius(btn, 0, 0);
         lv_obj_set_style_pad_all(btn, 0, 0);
     }
 
-    static void _applySmallBtnStyle(lv_obj_t* btn, bool solidBorder) {
+    static void _applySmallBtnStyle(lv_obj_t* btn) {
         lv_obj_set_style_bg_color(btn, lv_color_hex(CLR_KEY_BG), 0);
-        lv_obj_set_style_bg_color(btn, lv_color_hex(CLR_AMBER), LV_STATE_PRESSED);
-        lv_obj_set_style_border_color(btn, lv_color_hex(CLR_AMBER), 0);
-        lv_obj_set_style_border_width(btn, solidBorder ? 1 : 1, 0);
-        lv_obj_set_style_radius(btn, 4, 0);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(CLR_PHOSPHOR), LV_STATE_PRESSED);
+        lv_obj_set_style_border_color(btn, lv_color_hex(CLR_PHOSPHOR_MID), 0);
+        lv_obj_set_style_border_width(btn, 1, 0);
+        lv_obj_set_style_radius(btn, 0, 0);   /* square corners for console */
         lv_obj_set_style_pad_all(btn, 2, 0);
     }
 
@@ -369,9 +532,8 @@ private:
     static void _encCb(lv_event_t* e) {
         ChatScreen* c = (ChatScreen*)lv_event_get_user_data(e);
         c->encEnabled = !c->encEnabled;
-        uint32_t col = c->encEnabled ? CLR_AMBER : CLR_AMBER_DIM;
-        lv_obj_set_style_text_color(c->_encBtnLbl, lv_color_hex(col), 0);
-        lv_obj_set_style_border_color(c->_encBtn,  lv_color_hex(col), 0);
+        c->_updateEncButton();
+        c->_redrawMessages();
     }
 
     static void _sendBtnCb(lv_event_t* e) {
@@ -379,11 +541,14 @@ private:
         c->_doSend();
     }
 
-    /* Keyboard callbacks — use singleton to reach instance */
+    void _doSend() {
+        const char* txt = lv_textarea_get_text(_inputTa);
+        if (!txt || txt[0] == '\0') return;
+        if (onSend) onSend(txt);
+        lv_textarea_set_text(_inputTa, "");
+    }
+
     static void _kbCharCb(char ch) {
-#if UI_DEBUG
-        log_e("[KB] char '%c'", ch);
-#endif
         if (s_instance && s_instance->_keyboardTarget) {
             char buf[2] = {ch, '\0'};
             lv_textarea_add_text(s_instance->_keyboardTarget, buf);
@@ -391,8 +556,7 @@ private:
     }
 
     static void _kbActionCb(const char* act) {
-        if (!s_instance) return;
-        if (!s_instance->_keyboardTarget) return;
+        if (!s_instance || !s_instance->_keyboardTarget) return;
         if (strcmp(act, "BKSP") == 0) {
             lv_textarea_del_char(s_instance->_keyboardTarget);
         } else if (strcmp(act, "ENTER") == 0) {

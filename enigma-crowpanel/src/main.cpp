@@ -7,6 +7,10 @@
    ═══════════════════════════════════════════════════════════════ */
 #include <Arduino.h>
 #include <Preferences.h>
+#include <esp_task_wdt.h>
+#if BUZZER_PIN >= 0
+#include <driver/ledc.h>
+#endif
 #include "config.h"        /* display resolution, layout, colors, UART, NVS  */
 #include "board_config.h"  /* boardInit(), boardLvglInit(), TOUCH_DEBUG       */
 
@@ -28,17 +32,39 @@ static String          myCallsign;
 static TouchDebugScreen* tdScreen = nullptr;
 #endif
 
-/* LVGL draw buffers — small bands in internal DMA RAM to avoid RGB scanout stalls */
-static const uint32_t FB_ROWS = 24;
-static const uint32_t FB_SIZE = DISP_W * FB_ROWS;
-static lv_color_t*    fb1     = nullptr;
-static lv_color_t*    fb2     = nullptr;
+/* No separate draw buffers needed: direct_mode uses the panel's own PSRAM framebuffer. */
 
 /* ── Forward declarations ─────────────────────────────────────── */
 static void openSettings();
 static void closeSettings();
 static void doSend(const char* text);
 static void buildChatUI();
+static void showSplash();
+
+/* ════════════════════════════════════════════════════════════════
+   Sound
+   ════════════════════════════════════════════════════════════════ */
+static bool s_soundEnabled = false;
+
+static void _buzzStop(lv_timer_t* t) { (void)t;
+#if BUZZER_PIN >= 0
+    ledcWrite(BUZZER_CH, 0);
+#endif
+}
+
+static void _buzz(uint32_t freq, uint32_t dur_ms) {
+    if (!s_soundEnabled) return;
+#if BUZZER_PIN >= 0
+    ledcWriteTone(BUZZER_CH, freq);
+    lv_timer_t* t = lv_timer_create(_buzzStop, dur_ms, nullptr);
+    lv_timer_set_repeat_count(t, 1);
+#else
+    (void)freq; (void)dur_ms;
+#endif
+}
+
+static void soundClick()   { _buzz(2000, 6);  }
+static void soundReceived(){ _buzz(1400, 40); }
 
 /* ════════════════════════════════════════════════════════════════
    Heltec callbacks
@@ -48,19 +74,32 @@ static void onHeltecRx(const char* callsign, const char* plain,
 {
     chat.updateRssi(rssi);
     chat.addReceivedMessage(callsign, plain, cipher, rssi);
+    soundReceived();
 }
 
 static void onHeltecStatus(const char* /*radio*/, const char* key, int rssi) {
     chat.updateRssi(rssi);
     chat.updateKeyIndicator(key);
+    chat.notifyStatusReceived();
+}
+
+static void onHeltecTxAck(uint16_t id, uint8_t stage) {
+    chat.updateAck(id, stage);
+}
+
+static void onHeltecRemoteAck(uint16_t id) {
+    chat.updateAck(id, MSG_ACK_REMOTE);
 }
 
 /* ════════════════════════════════════════════════════════════════
    Settings open/close
    ════════════════════════════════════════════════════════════════ */
+static void _onSoundToggled(bool v) { s_soundEnabled = v; }
+
 static void openSettings() {
     if (settings) return;
     settings = new SettingsScreen();
+    settings->onSoundChanged = _onSoundToggled;
     settings->create(lv_scr_act(), &prefs, closeSettings);
     chat.setKeyboardTarget(settings->callsignTextArea());
 }
@@ -80,8 +119,8 @@ static void closeSettings() {
    Send
    ════════════════════════════════════════════════════════════════ */
 static void doSend(const char* text) {
-    heltec.sendMessage(text);
-    chat.addSentMessage(text);
+    uint16_t id = chat.addSentMessage(text);
+    heltec.sendMessage(text, id);
 }
 
 /* ════════════════════════════════════════════════════════════════
@@ -106,13 +145,54 @@ static void buildChatUI() {
                             "N7$C3 P2JQX F9A",
                             -71);
 #endif
-    log_e("[SYS] UI built");
-
     HeltecCallbacks cb;
-    cb.onRx     = onHeltecRx;
-    cb.onStatus = onHeltecStatus;
+    cb.onRx        = onHeltecRx;
+    cb.onStatus    = onHeltecStatus;
+    cb.onTxAck     = onHeltecTxAck;
+    cb.onRemoteAck = onHeltecRemoteAck;
     heltec.begin(cb);
-    log_e("[SYS] boot complete");
+}
+
+/* ════════════════════════════════════════════════════════════════
+   Boot splash
+   ════════════════════════════════════════════════════════════════ */
+static lv_obj_t*  s_splashRoot  = nullptr;
+static lv_obj_t*  s_splashTitle = nullptr;
+
+static const char SPLASH_TEXT[] = "BADGER WORKS\nENIGMA";
+
+static void _splashDoneCb(lv_timer_t* /*t*/) {
+    if (s_splashRoot) { lv_obj_del(s_splashRoot); s_splashRoot = nullptr; }
+    buildChatUI();
+}
+
+static void showSplash() {
+    lv_obj_t* scr = lv_scr_act();
+    s_splashRoot  = lv_obj_create(scr);
+    lv_obj_set_size(s_splashRoot, DISP_W, DISP_H);
+    lv_obj_set_pos(s_splashRoot, 0, 0);
+    lv_obj_set_style_bg_color(s_splashRoot, lv_color_hex(CLR_BG), 0);
+    lv_obj_set_style_bg_opa(s_splashRoot, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(s_splashRoot, lv_color_hex(CLR_AMBER), 0);
+    lv_obj_set_style_border_width(s_splashRoot, 2, 0);
+    lv_obj_clear_flag(s_splashRoot, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_splashTitle = lv_label_create(s_splashRoot);
+    lv_label_set_text(s_splashTitle, "");
+    lv_label_set_long_mode(s_splashTitle, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(s_splashTitle, lv_color_hex(CLR_AMBER), 0);
+    lv_obj_set_style_text_font(s_splashTitle, &lv_font_montserrat_16, 0);
+    lv_obj_align(s_splashTitle, LV_ALIGN_CENTER, 0, -18);
+
+    lv_obj_t* sub = lv_label_create(s_splashRoot);
+    lv_label_set_text(sub, "SECURE RADIO TERMINAL");
+    lv_obj_set_style_text_color(sub, lv_color_hex(CLR_AMBER_DIM), 0);
+    lv_obj_set_style_text_font(sub, &lv_font_montserrat_12, 0);
+    lv_obj_align(sub, LV_ALIGN_CENTER, 0, 22);
+
+    lv_label_set_text(s_splashTitle, SPLASH_TEXT);
+    lv_timer_t* done = lv_timer_create(_splashDoneCb, 1200, nullptr);
+    lv_timer_set_repeat_count(done, 1);
 }
 
 #if TOUCH_DEBUG
@@ -126,51 +206,49 @@ static void onTouchDebugDone() {
    setup
    ════════════════════════════════════════════════════════════════ */
 void setup() {
-    Serial.begin(115200);
-    log_e("[SYS] boot");
-
     /* NVS */
     prefs.begin(NVS_NAMESPACE, false);
     myCallsign = prefs.getString(NVS_KEY_CALLSIGN, DEFAULT_CALLSIGN);
 
-    log_e("[SYS] PSRAM free: %u  Heap free: %u",
-          heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-          heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
-
     /* Display hardware init (board-specific) */
     boardInit();
 
-    /* LVGL frame buffers — keep these fast; RGB scanout is already using PSRAM */
-    fb1 = (lv_color_t*)heap_caps_malloc(FB_SIZE * sizeof(lv_color_t),
-                                         MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
-    fb2 = (lv_color_t*)heap_caps_malloc(FB_SIZE * sizeof(lv_color_t),
-                                         MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
-    if (!fb1 || !fb2) {
-        log_e("[SYS] FATAL: LVGL DMA buffer alloc failed fb1=%p fb2=%p", fb1, fb2);
-        while(1);
-    }
-    log_e("[SYS] fb rows=%u fb1=%p fb2=%p PSRAM free: %u Heap free: %u",
-          FB_ROWS, fb1, fb2,
-          heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-          heap_caps_get_free_size(MALLOC_CAP_DEFAULT));
+    /* LVGL + display/touch driver registration (board-specific).
+       Uses direct_mode — no separate draw buffers needed. */
+    boardLvglInit();
 
-    /* LVGL + display/touch driver registration (board-specific) */
-    boardLvglInit(fb1, fb2, FB_SIZE);
+    /* Sound: read NVS preference and wire keyboard callback */
+    s_soundEnabled = prefs.getBool(NVS_KEY_SOUND, false);
+#if BUZZER_PIN >= 0
+    ledcSetup(BUZZER_CH, 2000, 8);
+    ledcAttachPin(BUZZER_PIN, BUZZER_CH);
+#endif
+    EnigmaKeyboard::onKeyPress = soundClick;
 
 #if TOUCH_DEBUG
     tdScreen = new TouchDebugScreen();
     tdScreen->create(lv_scr_act());
-    log_e("[SYS] touch debug screen shown");
 #else
-    buildChatUI();
+    showSplash();   /* show splash → buildChatUI() after 1.2 s */
 #endif
+
+    /* Watchdog: reset if loop() stalls for more than 15 s */
+    esp_task_wdt_config_t wdt_cfg = { .timeout_ms = 15000, .idle_core_mask = 0, .trigger_panic = true };
+    esp_task_wdt_init(&wdt_cfg);
+    esp_task_wdt_add(NULL);
 }
 
 /* ════════════════════════════════════════════════════════════════
    loop
    ════════════════════════════════════════════════════════════════ */
 void loop() {
-    lv_timer_handler();   /* LVGL task — call at least every 5 ms */
-    heltec.poll();        /* safe before heltec.begin() — Serial2.available() returns 0 */
+    esp_task_wdt_reset();
+    lv_timer_handler();
+    heltec.poll();
+    chat.checkLinkHealth(heltec.secsSinceRx(), heltec.secsSinceByte(),
+                         heltec.rxByteCount(), heltec.jsonOkCount(),
+                         heltec.jsonErrCount(), heltec.lineDropCount(),
+                         heltec.pingTxCount(), heltec.pongRxCount(),
+                         heltec.pingRxCount(), heltec.pongTxCount());
     delay(5);
 }

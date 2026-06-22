@@ -66,6 +66,7 @@
 
 /* Animation */
 #define LV_USE_ANIMATION 1
+#define LV_DRAW_COMPLEX  1   /* required for transform_zoom on key press */
 
 /* Theme — disable default white theme so our black background applies */
 #define LV_USE_THEME_DEFAULT 0
@@ -75,6 +76,10 @@
 /* Misc */
 #define LV_SPRINTF_CUSTOM 0
 #define LV_USE_USER_DATA  1
+
+/* Input device — kill scroll momentum/detection on touch */
+#define LV_INDEV_DEF_SCROLL_THROW 0
+#define LV_INDEV_DEF_SCROLL_LIMIT 30
 
 #endif /* LV_CONF_H */
 #endif /* End of "Content enable" */

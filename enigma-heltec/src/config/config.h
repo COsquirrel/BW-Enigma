@@ -14,7 +14,7 @@
 
 #define RADIO_ESPNOW    0
 #define RADIO_LORA      1
-#define RADIO_MODE      RADIO_LORA
+#define RADIO_MODE      RADIO_ESPNOW
 
 // Hardcoded MAC addresses for both units
 #define UNIT1_MAC       {0xAC, 0xA7, 0x04, 0x3C, 0xC0, 0xDC}  // TODO: fill in Unit 1 MAC AC:A7:04:3C:C0:DC
@@ -32,7 +32,9 @@
 
 #define ROLE_UNIT1      0
 #define ROLE_UNIT2      1
-#define UNIT_ROLE       ROLE_UNIT1  // Change to ROLE_UNIT2 when flashing the other device
+#ifndef UNIT_ROLE
+#define UNIT_ROLE       ROLE_UNIT1  // override with -DUNIT_ROLE=1 build flag for Unit 2
+#endif
 
 struct EnigmaConfig {
     uint8_t rotor_wirings[NUM_ROTORS][CIPHER_RANGE];

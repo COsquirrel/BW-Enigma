@@ -5,7 +5,8 @@
 
 class SettingsScreen {
 public:
-    lv_obj_t* root = nullptr;
+    lv_obj_t* root            = nullptr;
+    void (*onSoundChanged)(bool enabled) = nullptr;  /* set before create() */
 
     void create(lv_obj_t* parent, Preferences* prefs,
                 void (*onClose)())
@@ -62,6 +63,27 @@ public:
         String cs = _prefs->getString(NVS_KEY_CALLSIGN, DEFAULT_CALLSIGN);
         lv_textarea_set_text(_csTa, cs.c_str());
 
+        /* ── SOUND toggle ── */
+        lv_obj_t* sndLabel = lv_label_create(root);
+        lv_label_set_text(sndLabel, "SOUND:");
+        lv_obj_set_style_text_color(sndLabel, lv_color_hex(CLR_AMBER), 0);
+        lv_obj_set_style_text_font(sndLabel, &lv_font_montserrat_14, 0);
+        lv_obj_align(sndLabel, LV_ALIGN_TOP_LEFT, 0, 110);
+
+        _soundOn  = _prefs->getBool(NVS_KEY_SOUND, false);
+        _soundBtn = lv_btn_create(root);
+        lv_obj_set_size(_soundBtn, 80, 36);
+        lv_obj_align(_soundBtn, LV_ALIGN_TOP_LEFT, 120, 104);
+        lv_obj_set_style_border_color(_soundBtn, lv_color_hex(CLR_AMBER), 0);
+        lv_obj_set_style_border_width(_soundBtn, 1, 0);
+        lv_obj_set_style_radius(_soundBtn, 4, 0);
+        lv_obj_set_style_pad_all(_soundBtn, 2, 0);
+        _soundLbl = lv_label_create(_soundBtn);
+        lv_obj_set_style_text_font(_soundLbl, &lv_font_montserrat_14, 0);
+        lv_obj_center(_soundLbl);
+        lv_obj_add_event_cb(_soundBtn, _soundCb, LV_EVENT_CLICKED, this);
+        _refreshSoundBtn();
+
         /* Save button */
         lv_obj_t* saveBtn = lv_btn_create(root);
         lv_obj_set_size(saveBtn, 120, 40);
@@ -112,6 +134,31 @@ private:
     Preferences* _prefs    = nullptr;
     void (*_onClose)()     = nullptr;
     lv_obj_t*   _csTa      = nullptr;
+    lv_obj_t*   _soundBtn  = nullptr;
+    lv_obj_t*   _soundLbl  = nullptr;
+    bool        _soundOn   = false;
+
+    void _refreshSoundBtn() {
+        if (_soundOn) {
+            lv_obj_set_style_bg_color(_soundBtn, lv_color_hex(CLR_AMBER), 0);
+            lv_obj_set_style_bg_opa(_soundBtn, LV_OPA_COVER, 0);
+            lv_obj_set_style_text_color(_soundLbl, lv_color_hex(0x000000), 0);
+            lv_label_set_text(_soundLbl, "ON");
+        } else {
+            lv_obj_set_style_bg_color(_soundBtn, lv_color_hex(0x000000), 0);
+            lv_obj_set_style_bg_opa(_soundBtn, LV_OPA_COVER, 0);
+            lv_obj_set_style_text_color(_soundLbl, lv_color_hex(CLR_AMBER_DIM), 0);
+            lv_label_set_text(_soundLbl, "OFF");
+        }
+    }
+
+    static void _soundCb(lv_event_t* e) {
+        SettingsScreen* s = (SettingsScreen*)lv_event_get_user_data(e);
+        s->_soundOn = !s->_soundOn;
+        s->_prefs->putBool(NVS_KEY_SOUND, s->_soundOn);
+        s->_refreshSoundBtn();
+        if (s->onSoundChanged) s->onSoundChanged(s->_soundOn);
+    }
 
     static void _saveCb(lv_event_t* e) {
         SettingsScreen* s = (SettingsScreen*)lv_event_get_user_data(e);
