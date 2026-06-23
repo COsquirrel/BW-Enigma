@@ -53,10 +53,12 @@ public:
         if (!_initialized) return false;
         if (payload.length() == 0 || payload.length() > LORA_MAX_PAYLOAD) return false;
 
-        // transmit() takes a non-const String&; copy before passing
         String buf = payload;
         int state = _lora_module.transmit(buf);
-        // Return to RX mode regardless of TX result
+        /* TX-done fires DIO1 which sets _lora_rx_flag via the shared ISR.
+           Clear it before re-entering RX so we don't read back our own packet. */
+        _lora_rx_flag  = false;
+        _lora_rx_ready = false;
         _lora_module.startReceive();
         return state == RADIOLIB_ERR_NONE;
     }
