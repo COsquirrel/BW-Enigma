@@ -38,6 +38,7 @@
 #define NVS_NAMESPACE     "enigma"
 #define NVS_KEY_CALLSIGN  "callsign"
 #define DEFAULT_CALLSIGN  "BDGR1"
+#define NVS_KEY_NODE_ID   "node_id"   /* last-known Heltec node ID, cached locally */
 
 /* ── Chat limits ── */
 #define MAX_MESSAGES      50

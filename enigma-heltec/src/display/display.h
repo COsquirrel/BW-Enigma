@@ -32,17 +32,13 @@ public:
         return true;
     }
 
-    void showSplash(const char* role, const uint8_t* mac = nullptr) {
+    void showSplash(const char* nodeId, const uint8_t* mac = nullptr) {
         _oled.clearDisplay();
         _oled.setCursor(0, 0);  _oled.println("  BADGER WORKS");
-        _oled.setCursor(0, 10); _oled.println("  ENIGMA v0.3");
+        _oled.setCursor(0, 10); _oled.println("  ENIGMA v0.4");
         _oled.drawFastHLine(0, 22, SCREEN_WIDTH, SSD1306_WHITE);
-        _oled.setCursor(0, 26); _oled.print("  Role: "); _oled.println(role);
-#if RADIO_MODE == RADIO_LORA
-        _oled.setCursor(0, 36); _oled.println("  LoRa ready");
-#else
-        _oled.setCursor(0, 36); _oled.println("  ESP-NOW ready");
-#endif
+        _oled.setCursor(0, 26); _oled.print("  Node: "); _oled.println(nodeId);
+        _oled.setCursor(0, 36); _oled.println("  LoRa 915 MHz");
         if (mac) {
             char buf[18];
             snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X",
@@ -68,19 +64,20 @@ public:
         _oled.display();
     }
 
-    void showReceived(const String& cipher, const String& plain) {
+    void showReceived(const String& from, const String& cipher, const String& plain) {
         _oled.clearDisplay();
-        _oled.setCursor(0, 0);  _oled.println("[ RECEIVED ]");
+        /* Header: FROM node ID */
+        _oled.setCursor(0, 0);
+        _oled.print("[ FROM: "); _oled.print(from); _oled.println(" ]");
         _oled.drawFastHLine(0, 9, SCREEN_WIDTH, SSD1306_WHITE);
-        // Cipher
-        WrappedText wc = wordWrap(cipher, 18);
-        _oled.setCursor(0, 12); _oled.print("C: "); _oled.println(wc.lines[0]);
-        if (wc.count > 1) { _oled.setCursor(0, 22); _oled.print("   "); _oled.println(wc.lines[1]); }
-        _oled.drawFastHLine(0, 33, SCREEN_WIDTH, SSD1306_WHITE);
-        // Plain - up to 3 lines
+        /* Cipher — 1 line abbreviated */
+        WrappedText wc = wordWrap(cipher, 21);
+        _oled.setCursor(0, 12); _oled.println(wc.lines[0]);
+        _oled.drawFastHLine(0, 22, SCREEN_WIDTH, SSD1306_WHITE);
+        /* Plain — up to 3 lines */
         WrappedText wp = wordWrap(plain, 21);
         for (int i = 0; i < min(wp.count, 3); i++) {
-            _oled.setCursor(0, 36 + (i * 9));
+            _oled.setCursor(0, 26 + (i * 12));
             _oled.println(wp.lines[i]);
         }
         _oled.display();

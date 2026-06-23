@@ -87,8 +87,9 @@ static void onHeltecTxAck(uint16_t id, uint8_t stage, const char* cipher) {
     chat.updateStage(id, stage, cipher);
 }
 
-static void onHeltecRemoteAck(uint16_t id) {
-    chat.updateStage(id, MSG_STAGE_COMPLETE, nullptr);
+static void onHeltecNodeId(const char* nodeId) {
+    /* Cache the Heltec node ID in CrowPanel NVS so settings screen can display it */
+    prefs.putString(NVS_KEY_NODE_ID, nodeId);
 }
 
 /* ════════════════════════════════════════════════════════════════
@@ -96,10 +97,26 @@ static void onHeltecRemoteAck(uint16_t id) {
    ════════════════════════════════════════════════════════════════ */
 static void _onSoundToggled(bool v) { s_soundEnabled = v; }
 
+static void _onNodeIdChanged(const char* id) {
+    /* Send to Heltec (writes NVS there), also cache locally */
+    heltec.setNodeId(id);
+    prefs.putString(NVS_KEY_NODE_ID, id);
+}
+
+static void _onCallsignFocused() {
+    if (settings) chat.setKeyboardTarget(settings->callsignTextArea());
+}
+static void _onNodeIdFocused() {
+    if (settings) chat.setKeyboardTarget(settings->nodeIdTextArea());
+}
+
 static void openSettings() {
     if (settings) return;
     settings = new SettingsScreen();
-    settings->onSoundChanged = _onSoundToggled;
+    settings->onSoundChanged    = _onSoundToggled;
+    settings->onNodeIdChanged   = _onNodeIdChanged;
+    settings->onCallsignFocused = _onCallsignFocused;
+    settings->onNodeIdFocused   = _onNodeIdFocused;
     settings->create(lv_scr_act(), &prefs, closeSettings);
     chat.setKeyboardTarget(settings->callsignTextArea());
 }
@@ -146,10 +163,10 @@ static void buildChatUI() {
                             -71);
 #endif
     HeltecCallbacks cb;
-    cb.onRx        = onHeltecRx;
-    cb.onStatus    = onHeltecStatus;
-    cb.onTxAck     = onHeltecTxAck;
-    cb.onRemoteAck = onHeltecRemoteAck;
+    cb.onRx     = onHeltecRx;
+    cb.onStatus = onHeltecStatus;
+    cb.onTxAck  = onHeltecTxAck;
+    cb.onNodeId = onHeltecNodeId;
     heltec.begin(cb);
 }
 

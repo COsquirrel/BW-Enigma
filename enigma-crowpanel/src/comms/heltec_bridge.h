@@ -16,7 +16,8 @@ struct HeltecCallbacks {
                      int rssi)                               = nullptr;
     void (*onTxAck)(uint16_t id, uint8_t stage,
                     const char* cipher)                      = nullptr;
-    void (*onRemoteAck)(uint16_t id)                        = nullptr;
+    /* Called when Heltec reports its node ID (on every status response) */
+    void (*onNodeId)(const char* nodeId)                    = nullptr;
 };
 
 /* ════════════════════════════════════════════════════════════════
@@ -88,6 +89,14 @@ public:
         if (now - _lastDiagMs >= HELTEC_DIAG_INTERVAL_MS) {
             sendDiag();
         }
+    }
+
+    /* Send set_node_id command to Heltec — writes to NVS there, takes effect immediately */
+    void setNodeId(const char* id) {
+        JsonDocument doc;
+        doc["type"]    = "set_node_id";
+        doc["node_id"] = id;
+        _sendJson(doc);
     }
 
     /* Sanitise plain text then send {"type":"tx","msg":"...","id":N}\n */
@@ -246,17 +255,23 @@ private:
                     doc["rssi"]  | 0
                 );
             }
+            /* Status always includes node_id — cache it on the CrowPanel side */
+            const char* nodeId = doc["node_id"] | "";
+            if (_cb.onNodeId && nodeId[0] != '\0') {
+                _cb.onNodeId(nodeId);
+            }
+        } else if (strcmp(type, "node_id_ack") == 0) {
+            /* Heltec confirms it wrote the new node ID to NVS */
+            const char* nodeId = doc["node_id"] | "";
+            if (_cb.onNodeId && nodeId[0] != '\0') {
+                _cb.onNodeId(nodeId);
+            }
         } else if (strcmp(type, "tx_ack") == 0) {
             if (_cb.onTxAck) {
                 uint16_t    id     = doc["id"]     | (uint16_t)0;
                 const char* stage  = doc["stage"]  | "";
                 const char* cipher = doc["cipher"] | "";
                 _cb.onTxAck(id, _stageToNum(stage), cipher);
-            }
-        } else if (strcmp(type, "remote_ack") == 0) {
-            if (_cb.onRemoteAck) {
-                uint16_t id = doc["id"] | (uint16_t)0;
-                _cb.onRemoteAck(id);
             }
         } else if (strcmp(type, "ping") == 0) {
             _pingRxCount++;

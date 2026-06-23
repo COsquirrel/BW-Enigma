@@ -1,83 +1,89 @@
 #include <Arduino.h>
-#include <WiFi.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 #include <esp_task_wdt.h>
 #include <esp_mac.h>
 #include "cipher/enigma.h"
 #include "config/config.h"
 #include "config/key_storage.h"
-#if RADIO_MODE == RADIO_LORA
 #include "radio/lora_radio.h"
-#else
-#include "radio/espnow_radio.h"
-#endif
 #include "display/display.h"
 #include "utils.h"
 
 /* ── CrowPanel bridge UART (UART1) ──────────────────────────────────────────
-   GPIO1/2 are clean header pins with no IOMUX conflict.
    Physical wiring: Heltec GPIO1  TX → CrowPanel J10 pin 1 (GPIO44 RX)
                     Heltec GPIO2  RX ← CrowPanel J10 pin 2 (GPIO43 TX)
    ────────────────────────────────────────────────────────────────────────── */
-#define CROW_TX_PIN   1
-#define CROW_RX_PIN   2
+#define CROW_TX_PIN             1
+#define CROW_RX_PIN             2
 #define CROW_STATUS_INTERVAL_MS 30000UL
-#define CROW_LINE_TIMEOUT_MS 2000UL
-#define CROW_PING_INTERVAL_MS 5000UL
+#define CROW_LINE_TIMEOUT_MS    2000UL
+#define CROW_PING_INTERVAL_MS   5000UL
 static HardwareSerial CrowSerial(1);
 
-/* ── Role / peer — resolved at runtime from own WiFi MAC ─────────────────── */
-static const uint8_t _UNIT1_MAC[] = UNIT1_MAC;
-static const uint8_t _UNIT2_MAC[] = UNIT2_MAC;
-static const char*   UNIT_STR     = "UNIT?";  // set in setup()
+/* ── Node ID ─────────────────────────────────────────────────────────────────
+   4-char hex from WiFi MAC (e.g. "C0DC") unless overridden in NVS.
+   User sets via CrowPanel settings → UART set_node_id → written to NVS here.
+   Identity is fully runtime-provisioned; identical firmware flashes to all
+   units with no per-unit code changes.                                       */
+static char        _nodeId[9] = "????";
+static Preferences _idPrefs;
+
+static void _loadNodeId() {
+    _idPrefs.begin(NVS_ENIGMA_ID_NS, true);
+    String stored = _idPrefs.getString(NVS_KEY_NODE_ID, "");
+    _idPrefs.end();
+
+    if (stored.length() > 0) {
+        strncpy(_nodeId, stored.c_str(), sizeof(_nodeId) - 1);
+    } else {
+        /* Default: last 4 hex chars of WiFi eFuse MAC (bytes 4 & 5) */
+        uint8_t mac[6];
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        snprintf(_nodeId, sizeof(_nodeId), "%02X%02X", mac[4], mac[5]);
+    }
+    _nodeId[sizeof(_nodeId) - 1] = '\0';
+}
 
 /* ── Globals ─────────────────────────────────────────────────────────────── */
-Enigma      enigma;
-#if RADIO_MODE == RADIO_LORA
-LoRaRadio   radio;
-#else
-EspNowRadio radio;
-#endif
-Display     display;
-KeyStorage  keyStorage;
+Enigma     enigma;
+LoRaRadio  radio;
+Display    display;
+KeyStorage keyStorage;
 
 static EnigmaConfig activeCfg;
 static bool         keyFromNVS = false;
 
-/* Pre-allocated receive buffers — avoids heap churn on every incoming message */
-static char _rxCipherBuf[256];
-static char _rxPlainBuf[256];
+/* Pre-allocated buffers — avoids heap churn on every incoming packet */
+static char _rxCipherBuf[260];
 
-/* ── Non-blocking line accumulator for CrowSerial ────────────────────────── */
+/* ── Non-blocking line accumulator for CrowSerial ─────────────────────────── */
 static char     _crowBuf[512];
-static int      _crowLen       = 0;
-static uint32_t _crowLineStart = 0;   /* ms when first byte of current line arrived */
-static uint32_t _lastStatus    = 0;
-static uint32_t _lastRxMs      = 0;
-static bool     _radioOk       = false;
+static int      _crowLen        = 0;
+static uint32_t _crowLineStart  = 0;
+static uint32_t _lastStatus     = 0;
+static uint32_t _lastRxMs       = 0;
+static bool     _radioOk        = false;
 
-/* ── Per-message ACK tracking ────────────────────────────────────────────── */
-static uint16_t _pendingTxId = 0;   // ID of the most recently transmitted message
+/* ── Diagnostic counters ─────────────────────────────────────────────────── */
+static uint32_t _crowRxCount    = 0;
+static uint32_t _crowErrCount   = 0;
+static uint32_t _crowByteCount  = 0;
+static uint32_t _crowDropCount  = 0;
+static uint32_t _pingTxCount    = 0;
+static uint32_t _pingRxCount    = 0;
+static uint32_t _pongTxCount    = 0;
+static uint32_t _pongRxCount    = 0;
+static uint32_t _crowDiagPingRx = 0;
+static uint32_t _crowDiagPongTx = 0;
+static uint32_t _pingSeq        = 0;
+static uint32_t _lastPingMs     = 0;
+static uint32_t _radioTxCount   = 0;
+static uint32_t _radioRxCount   = 0;
+static uint32_t _lastIdleMs     = 0;
+static uint32_t _lastMsgMs      = 0;
 
-/* ── Diagnostic counters (visible on OLED idle screen) ───────────────────── */
-static uint32_t _crowRxCount   = 0;   // valid JSON lines received from CrowPanel
-static uint32_t _crowErrCount  = 0;   // JSON parse errors from CrowPanel
-static uint32_t _crowByteCount = 0;   // raw UART bytes received from CrowPanel
-static uint32_t _crowDropCount = 0;   // partial lines discarded before newline
-static uint32_t _pingTxCount   = 0;   // Heltec pings sent to CrowPanel
-static uint32_t _pingRxCount   = 0;   // CrowPanel pings received by Heltec
-static uint32_t _pongTxCount   = 0;   // pongs sent back to CrowPanel
-static uint32_t _pongRxCount   = 0;   // pongs received from CrowPanel
-static uint32_t _crowDiagPingRx = 0;  // CrowPanel reports Heltec pings received
-static uint32_t _crowDiagPongTx = 0;  // CrowPanel reports pongs sent to Heltec
-static uint32_t _pingSeq       = 0;
-static uint32_t _lastPingMs    = 0;
-static uint32_t _radioTxCount  = 0;   // esp_now_send() calls (successful)
-static uint32_t _radioRxCount  = 0;   // messages received from radio peer
-static uint32_t _lastIdleMs    = 0;   // last time idle screen was refreshed
-static uint32_t _lastMsgMs     = 0;   // last time showSent/showReceived was called
-
-/* ── JSON helpers ────────────────────────────────────────────────────────── */
+/* ── JSON helpers ─────────────────────────────────────────────────────────── */
 static void sendToCrow(JsonDocument& doc) {
     serializeJson(doc, CrowSerial);
     CrowSerial.print('\n');
@@ -86,18 +92,19 @@ static void sendToCrow(JsonDocument& doc) {
 
 static void sendStatus(bool radioOk) {
     JsonDocument doc;
-    doc["type"]  = "status";
-    doc["radio"] = radioOk ? "ok" : "err";
-    doc["key"]   = keyFromNVS ? "nvs" : "def";
-    doc["rssi"]  = 0;
-    doc["snr"]   = 0.0;
+    doc["type"]    = "status";
+    doc["radio"]   = radioOk ? "ok" : "err";
+    doc["key"]     = keyFromNVS ? "nvs" : "def";
+    doc["rssi"]    = 0;
+    doc["snr"]     = 0.0;
+    doc["node_id"] = _nodeId;
     sendToCrow(doc);
 }
 
 static void sendPingToCrow() {
     JsonDocument doc;
     doc["type"] = "ping";
-    doc["seq"] = ++_pingSeq;
+    doc["seq"]  = ++_pingSeq;
     doc["from"] = "heltec";
     sendToCrow(doc);
     _pingTxCount++;
@@ -116,23 +123,41 @@ static void handleCrowJson(const char* raw) {
 
     if (strcmp(type, "status") == 0) {
         sendStatus(_radioOk);
+
     } else if (strcmp(type, "ping") == 0) {
         _pingRxCount++;
         JsonDocument reply;
         reply["type"] = "pong";
-        reply["seq"] = doc["seq"] | (uint32_t)0;
+        reply["seq"]  = doc["seq"] | (uint32_t)0;
         reply["from"] = "heltec";
         sendToCrow(reply);
         _pongTxCount++;
+
     } else if (strcmp(type, "pong") == 0) {
         _pongRxCount++;
+
     } else if (strcmp(type, "diag") == 0) {
         _crowDiagPingRx = doc["ping_rx"] | _crowDiagPingRx;
         _crowDiagPongTx = doc["pong_tx"] | _crowDiagPongTx;
+
+    } else if (strcmp(type, "set_node_id") == 0) {
+        const char* newId = doc["node_id"] | "";
+        int len = strlen(newId);
+        if (len > 0 && len <= 8) {
+            strncpy(_nodeId, newId, sizeof(_nodeId) - 1);
+            _nodeId[sizeof(_nodeId) - 1] = '\0';
+            _idPrefs.begin(NVS_ENIGMA_ID_NS, false);
+            _idPrefs.putString(NVS_KEY_NODE_ID, newId);
+            _idPrefs.end();
+            JsonDocument ack;
+            ack["type"]    = "node_id_ack";
+            ack["node_id"] = _nodeId;
+            sendToCrow(ack);
+        }
+
     } else if (strcmp(type, "tx") == 0) {
         const char* msg = doc["msg"] | "";
         uint16_t    id  = doc["id"]  | (uint16_t)0;
-        _pendingTxId = id;
 
         String clean = sanitizeInput(String(msg));
 
@@ -154,11 +179,20 @@ static void handleCrowJson(const char* raw) {
             return;
         }
 
-        String cipher = enigma.processString(clean);
+        /* Build plaintext block: FROM|MESSAGE|MSGID
+           All three fields are within the Enigma cipher range (ASCII 32-125).
+           Pipe '|' (ASCII 124) is in range and acts as delimiter.
+           Receiver splits on first and last '|' so message may contain '|'. */
+        char plainBlock[260];
+        snprintf(plainBlock, sizeof(plainBlock), "%s|%s|%u",
+                 _nodeId, clean.c_str(), (unsigned)id);
+
+        /* Encrypt the entire block */
+        String cipher = enigma.processString(String(plainBlock));
         display.showSent(clean, cipher);
         _lastMsgMs = millis();
 
-        /* Stage encrypted: cipher computed — send cipher back so CrowPanel can display CT */
+        /* Stage encrypted: cipher computed — include cipher so CrowPanel can display CT */
         {
             JsonDocument ack;
             ack["type"]   = "tx_ack";
@@ -168,14 +202,10 @@ static void handleCrowJson(const char* raw) {
             sendToCrow(ack);
         }
 
-        /* Stage transmitted: radio send initiated */
-#if RADIO_MODE == RADIO_ESPNOW
-        bool ok = radio.sendWithId(cipher, id);
-        if (ok) _radioTxCount++;
-#else
+        /* Transmit over LoRa (blocking — returns when on-air TX completes) */
         bool ok = radio.send(cipher);
         if (ok) _radioTxCount++;
-#endif
+
         {
             JsonDocument ack;
             ack["type"]  = "tx_ack";
@@ -196,35 +226,24 @@ void setup() {
 
     bool dispOk = display.init();
 
+    _loadNodeId();
+
     activeCfg  = ACTIVE_CONFIG;
     keyFromNVS = keyStorage.load(activeCfg.rotor_start, activeCfg.plugboard);
     enigma.init(activeCfg);
 
-    /* ── Auto-detect unit role from own WiFi MAC ── */
     uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);  // reads eFuse directly, no WiFi init needed
-#if RADIO_MODE == RADIO_ESPNOW
-    if (memcmp(mac, _UNIT1_MAC, 6) == 0) {
-        UNIT_STR = "UNIT1";
-        radio.setPeer(_UNIT2_MAC);
-    } else if (memcmp(mac, _UNIT2_MAC, 6) == 0) {
-        UNIT_STR = "UNIT2";
-        radio.setPeer(_UNIT1_MAC);
-    } else {
-        UNIT_STR = "UNIT?";   // MAC not in config — update UNIT1_MAC/UNIT2_MAC
-        radio.setPeer(_UNIT2_MAC);
-    }
-#endif
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
 
     _radioOk = radio.init();
 
-    if (dispOk) display.showSplash(UNIT_STR, mac);
+    if (dispOk) display.showSplash(_nodeId, mac);
 
-    /* Send initial status to CrowPanel */
     sendStatus(_radioOk);
 
-    /* Watchdog: reset if loop() stalls for more than 15 s */
-    esp_task_wdt_config_t wdt_cfg = { .timeout_ms = 15000, .idle_core_mask = 0, .trigger_panic = true };
+    esp_task_wdt_config_t wdt_cfg = {
+        .timeout_ms = 15000, .idle_core_mask = 0, .trigger_panic = true
+    };
     esp_task_wdt_init(&wdt_cfg);
     esp_task_wdt_add(NULL);
 }
@@ -235,7 +254,7 @@ void setup() {
 void loop() {
     esp_task_wdt_reset();
 
-    /* ── Heartbeat: JSON only, so the CrowPanel parser stays clean ── */
+    /* ── Heartbeat ── */
     if (millis() - _lastStatus >= CROW_STATUS_INTERVAL_MS) {
         _lastStatus = millis();
         sendStatus(_radioOk);
@@ -244,10 +263,10 @@ void loop() {
         sendPingToCrow();
     }
 
-    /* ── RX from CrowPanel: accumulate printable chars, dispatch on newline ── */
+    /* ── RX from CrowPanel: accumulate, dispatch on newline ── */
     if (_crowLen > 0 && (millis() - _crowLineStart) > CROW_LINE_TIMEOUT_MS) {
         _crowDropCount++;
-        _crowLen = 0;  /* partial-line timeout — discard stale fragment */
+        _crowLen = 0;
     }
     while (CrowSerial.available()) {
         _crowByteCount++;
@@ -260,18 +279,13 @@ void loop() {
                 _crowLen = 0;
             }
         } else if (c >= 0x20 && c <= 0x7E) {
-            if (_crowLen == 0 && c != '{') {
-                continue;
-            }
-            if (_crowLen > 0 && c == '{') {
-                _crowDropCount++;
-                _crowLen = 0;
-            }
+            if (_crowLen == 0 && c != '{') continue;
+            if (_crowLen > 0 && c == '{') { _crowDropCount++; _crowLen = 0; }
             if (_crowLen == 0) _crowLineStart = millis();
             if (_crowLen < (int)(sizeof(_crowBuf) - 1)) {
                 _crowBuf[_crowLen++] = c;
             } else {
-                _crowLen = 0;  /* overflow — discard */
+                _crowLen = 0;
             }
         }
     }
@@ -290,64 +304,68 @@ void loop() {
         }
     }
 
-    /* ── ESP-NOW TX delivery result (async from TX callback) ── */
-#if RADIO_MODE == RADIO_ESPNOW
-    {
-        bool txOk;
-        if (radio.pollTxResult(&txOk)) {
-            JsonDocument ack;
-            ack["type"]  = "tx_ack";
-            ack["id"]    = _pendingTxId;
-            ack["stage"] = txOk ? "radio_ack" : "drop";
-            sendToCrow(ack);
-        }
-    }
-
-    /* ── Remote application-level ACK (0x02 packet back from peer) ── */
-    {
-        uint16_t ackId;
-        if (radio.pollRemoteAck(&ackId)) {
-            JsonDocument doc;
-            doc["type"] = "remote_ack";
-            doc["id"]   = ackId;
-            sendToCrow(doc);
-        }
-    }
-#endif
-
-    /* ── RX from radio: decrypt, forward to CrowPanel ── */
+    /* ── RX from LoRa radio: decrypt block, parse FROM|MESSAGE|MSGID ── */
     if (radio.available()) {
-        bool gotMsg = false;
-#if RADIO_MODE == RADIO_ESPNOW
-        gotMsg = radio.receiveTo(_rxCipherBuf, sizeof(_rxCipherBuf)) > 0;
-        if (gotMsg) radio.ackLastReceived();  /* send 0x02 ACK back to sender */
-#else
-        { String t = radio.receive(); strncpy(_rxCipherBuf, t.c_str(), sizeof(_rxCipherBuf)-1); _rxCipherBuf[sizeof(_rxCipherBuf)-1]='\0'; gotMsg = _rxCipherBuf[0] != '\0'; }
-#endif
-        if (gotMsg) {
-            _radioRxCount++;
-            { String p = enigma.processString(String(_rxCipherBuf)); strncpy(_rxPlainBuf, p.c_str(), sizeof(_rxPlainBuf)-1); _rxPlainBuf[sizeof(_rxPlainBuf)-1]='\0'; }
+        String cipherText = radio.receive();
+        if (cipherText.length() > 0) {
+            /* Copy to fixed buffer */
+            int clen = cipherText.length();
+            if (clen >= (int)sizeof(_rxCipherBuf)) clen = sizeof(_rxCipherBuf) - 1;
+            memcpy(_rxCipherBuf, cipherText.c_str(), clen);
+            _rxCipherBuf[clen] = '\0';
+
+            String plainBlock = enigma.processString(cipherText);
             int   rssi = radio.lastRssi();
             float snr  = radio.lastSnr();
-            display.showReceived(String(_rxCipherBuf), String(_rxPlainBuf));
-            _lastMsgMs = millis();
-            JsonDocument doc;
-            doc["type"]     = "rx";
-            doc["callsign"] = UNIT_STR;
-            doc["plain"]    = _rxPlainBuf;
-            doc["cipher"]   = _rxCipherBuf;
-            doc["rssi"]     = rssi;
-            doc["snr"]      = snr;
-            sendToCrow(doc);
+
+            /* Split on first and last '|':
+               first '|' separates FROM from the rest
+               last  '|' separates MESSAGE from MSGID
+               This naturally tolerates '|' inside the message body. */
+            const char* blk       = plainBlock.c_str();
+            const char* firstPipe = strchr(blk, '|');
+            const char* lastPipe  = strrchr(blk, '|');
+
+            if (firstPipe && lastPipe && firstPipe != lastPipe) {
+                char fromBuf[16] = {};
+                char msgBuf[256] = {};
+
+                int fromLen = (int)(firstPipe - blk);
+                if (fromLen >= (int)sizeof(fromBuf)) fromLen = (int)sizeof(fromBuf) - 1;
+                memcpy(fromBuf, blk, fromLen);
+
+                int msgLen = (int)(lastPipe - firstPipe) - 1;
+                if (msgLen > 0) {
+                    if (msgLen >= (int)sizeof(msgBuf)) msgLen = (int)sizeof(msgBuf) - 1;
+                    memcpy(msgBuf, firstPipe + 1, msgLen);
+                }
+
+                uint16_t rxId = (uint16_t)atoi(lastPipe + 1);
+
+                _radioRxCount++;
+                display.showReceived(String(fromBuf), cipherText, String(msgBuf));
+                _lastMsgMs = millis();
+
+                JsonDocument rxDoc;
+                rxDoc["type"]     = "rx";
+                rxDoc["callsign"] = fromBuf;
+                rxDoc["plain"]    = msgBuf;
+                rxDoc["cipher"]   = _rxCipherBuf;
+                rxDoc["rssi"]     = rssi;
+                rxDoc["snr"]      = snr;
+                rxDoc["msgid"]    = rxId;
+                sendToCrow(rxDoc);
+            }
+            /* else: malformed — noise or wrong cipher key; discard silently */
         }
     }
 
-    /* ── Idle OLED stats — refreshes every 2 s when no message is on screen ── */
+    /* ── Idle OLED diagnostics — refresh every 2 s after 5 s of silence ── */
     {
         uint32_t now = millis();
         if (now - _lastMsgMs > 5000 && now - _lastIdleMs > 2000) {
             _lastIdleMs = now;
-            display.showIdle(UNIT_STR,
+            display.showIdle(_nodeId,
                              _crowByteCount, _crowRxCount,
                              _crowErrCount + _crowDropCount,
                              _pingTxCount, _pongRxCount,

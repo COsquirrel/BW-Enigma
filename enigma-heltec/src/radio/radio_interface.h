@@ -1,9 +1,7 @@
 #pragma once
 #include <Arduino.h>
 
-// Abstract radio interface
-// Concrete implementations: EspNowRadio, LoRaRadio
-// main.cpp only ever calls this interface
+/* Abstract radio interface — concrete implementation: LoRaRadio (lora_radio.h) */
 class RadioInterface {
 public:
     virtual ~RadioInterface() {}
