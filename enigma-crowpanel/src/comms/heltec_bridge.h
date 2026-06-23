@@ -45,11 +45,8 @@ public:
         HELTEC_UART.setRxBufferSize(1024);
         HELTEC_UART.begin(HELTEC_BAUD, SERIAL_8N1,
                           HELTEC_RX_PIN, HELTEC_TX_PIN);
-        _lastRxMs = millis();
-        _lastByteMs = _lastRxMs;
+        _lastRxMs            = millis();
         _lastStatusRequestMs = 0;
-        _lastPingMs = 0;
-        _lastDiagMs = 0;
         _lineQueue = xQueueCreate(8, sizeof(_LineItem));
         if (!_lineQueue) {
             Serial.println("[heltec_rx] ERROR: queue create failed");
@@ -79,15 +76,10 @@ public:
         while (xQueueReceive(_lineQueue, &item, 0) == pdTRUE) {
             _parse(item.data);
         }
+        /* Re-request status if Heltec has been quiet for 30 s */
         uint32_t now = millis();
-        if (now - _lastRxMs > 10000 && now - _lastStatusRequestMs > 15000) {
+        if (now - _lastRxMs > 30000 && now - _lastStatusRequestMs > 30000) {
             requestStatus();
-        }
-        if (now - _lastPingMs >= HELTEC_PING_INTERVAL_MS) {
-            sendPing();
-        }
-        if (now - _lastDiagMs >= HELTEC_DIAG_INTERVAL_MS) {
-            sendDiag();
         }
     }
 
@@ -110,48 +102,13 @@ public:
         _sendJson(doc);
     }
 
-    uint32_t secsSinceRx()    const { return (millis() - _lastRxMs) / 1000; }
-    uint32_t secsSinceByte()  const { return (millis() - _lastByteMs) / 1000; }
-    uint32_t rxByteCount()   const { return _rxByteCount; }
-    uint32_t jsonOkCount()   const { return _jsonOkCount; }
-    uint32_t jsonErrCount()  const { return _jsonErrCount; }
-    uint32_t lineDropCount() const { return _lineDropCount; }
-    uint32_t pingTxCount()   const { return _pingTxCount; }
-    uint32_t pingRxCount()   const { return _pingRxCount; }
-    uint32_t pongTxCount()   const { return _pongTxCount; }
-    uint32_t pongRxCount()   const { return _pongRxCount; }
+    uint32_t secsSinceRx() const { return (millis() - _lastRxMs) / 1000; }
 
     void requestStatus() {
         JsonDocument doc;
         doc["type"] = "status";
-        doc["crow_ping_rx"] = _pingRxCount;
-        doc["crow_pong_tx"] = _pongTxCount;
-        doc["crow_ping_tx"] = _pingTxCount;
-        doc["crow_pong_rx"] = _pongRxCount;
         _sendJson(doc);
         _lastStatusRequestMs = millis();
-    }
-
-    void sendPing() {
-        JsonDocument doc;
-        doc["type"] = "ping";
-        doc["seq"] = ++_pingSeq;
-        doc["from"] = "crow";
-        _sendJson(doc);
-        _pingTxCount++;
-        _lastPingMs = millis();
-    }
-
-    void sendDiag() {
-        JsonDocument doc;
-        doc["type"] = "diag";
-        doc["from"] = "crow";
-        doc["ping_tx"] = _pingTxCount;
-        doc["pong_rx"] = _pongRxCount;
-        doc["ping_rx"] = _pingRxCount;
-        doc["pong_tx"] = _pongTxCount;
-        _sendJson(doc);
-        _lastDiagMs = millis();
     }
 
 private:
@@ -159,21 +116,9 @@ private:
     struct _LineItem { char data[512]; };
 
     HeltecCallbacks          _cb;
-    QueueHandle_t            _lineQueue            = nullptr;
-    uint32_t                 _lastRxMs             = 0;
-    uint32_t                 _lastByteMs           = 0;
-    uint32_t                 _lastStatusRequestMs  = 0;
-    uint32_t                 _lastPingMs           = 0;
-    uint32_t                 _lastDiagMs           = 0;
-    uint32_t                 _pingSeq              = 0;
-    volatile uint32_t        _rxByteCount          = 0;
-    volatile uint32_t        _jsonOkCount          = 0;
-    volatile uint32_t        _jsonErrCount         = 0;
-    volatile uint32_t        _lineDropCount        = 0;
-    volatile uint32_t        _pingTxCount          = 0;
-    volatile uint32_t        _pingRxCount          = 0;
-    volatile uint32_t        _pongTxCount          = 0;
-    volatile uint32_t        _pongRxCount          = 0;
+    QueueHandle_t            _lineQueue           = nullptr;
+    uint32_t                 _lastRxMs            = 0;
+    uint32_t                 _lastStatusRequestMs = 0;
 
     /* ── Core 0 UART reader task ── */
     static void _uartTask(void* param) {
@@ -185,13 +130,10 @@ private:
         for (;;) {
             /* Partial-line timeout: discard buffer if no newline arrives. */
             if (len > 0 && (millis() - lineStartMs) > HELTEC_LINE_TIMEOUT_MS) {
-                self->_lineDropCount++;
                 len = 0;
             }
 
             while (HELTEC_UART.available()) {
-                self->_rxByteCount++;
-                self->_lastByteMs = millis();
                 char c = (char)HELTEC_UART.read();
 
                 if (c == '\n' || c == '\r') {
@@ -206,13 +148,8 @@ private:
                         len = 0;
                     }
                 } else if (c >= 0x20 && c <= 0x7E) {
-                    if (len == 0 && c != '{') {
-                        continue;
-                    }
-                    if (len > 0 && c == '{') {
-                        self->_lineDropCount++;
-                        len = 0;
-                    }
+                    if (len == 0 && c != '{') continue;
+                    if (len > 0 && c == '{') { len = 0; }   /* restart on nested '{' */
                     if (len == 0) lineStartMs = millis();
                     if (len < (int)(sizeof(buf) - 1)) {
                         buf[len++] = c;
@@ -229,11 +166,7 @@ private:
     /* ── Dispatch a parsed JSON line ── */
     void _parse(const char* raw) {
         JsonDocument doc;
-        if (deserializeJson(doc, raw) != DeserializationError::Ok) {
-            _jsonErrCount++;
-            return;
-        }
-        _jsonOkCount++;
+        if (deserializeJson(doc, raw) != DeserializationError::Ok) return;
         _lastRxMs = millis();
         const char* type = doc["type"] | "";
 
@@ -273,16 +206,6 @@ private:
                 const char* cipher = doc["cipher"] | "";
                 _cb.onTxAck(id, _stageToNum(stage), cipher);
             }
-        } else if (strcmp(type, "ping") == 0) {
-            _pingRxCount++;
-            JsonDocument reply;
-            reply["type"] = "pong";
-            reply["seq"] = doc["seq"] | (uint32_t)0;
-            reply["from"] = "crow";
-            _sendJson(reply);
-            _pongTxCount++;
-        } else if (strcmp(type, "pong") == 0) {
-            _pongRxCount++;
         }
     }
 
@@ -293,13 +216,10 @@ private:
     }
 
     static uint8_t _stageToNum(const char* s) {
-        if (strcmp(s, "queued")      == 0) return MSG_STAGE_QUEUED;
-        if (strcmp(s, "encrypted")   == 0) return MSG_STAGE_ENCRYPTED;
-        if (strcmp(s, "transmitted") == 0) return MSG_STAGE_ENCRYPTED;  /* same display */
-        if (strcmp(s, "radio_ack")   == 0) return MSG_STAGE_RADIO_ACK;
+        if (strcmp(s, "transmitted") == 0) return MSG_STAGE_SENT;
         if (strcmp(s, "fail")        == 0) return MSG_STAGE_FAILED;
         if (strcmp(s, "drop")        == 0) return MSG_STAGE_FAILED;
-        return MSG_STAGE_PENDING;
+        return MSG_STAGE_PENDING;  /* queued, encrypted — cipher still captured */
     }
 
     static void _sanitise(const char* src, char* dst, size_t dstsz) {

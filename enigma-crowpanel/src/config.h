@@ -51,18 +51,13 @@
 /* ── Link health / heartbeat ── */
 #define CLR_LINK_DOWN   0x660000   /* dark red — link stale > 30 s */
 
-/* ── Per-message pipeline stages ────────────────────────────────────────────
-   Stored in ChatMessage::stage; driven by tx_ack / remote_ack from Heltec.
-   Display prefix: ---- >--- >>-- >>>- >>>> FAIL
-   Stage 4 (>>>>) requires a remote_ack OTA packet back from the far Heltec
-   (proxy for "far screen posted" until true display-ack is wired up).       */
-#define MSG_STAGE_PENDING   0   /* created locally, no Heltec reply yet      */
-#define MSG_STAGE_QUEUED    1   /* Heltec received via UART                  */
-#define MSG_STAGE_ENCRYPTED 2   /* Heltec encrypted + transmitted over air   */
-#define MSG_STAGE_RADIO_ACK 3   /* remote MAC acked at radio layer           */
-#define MSG_STAGE_COMPLETE  4   /* remote_ack — far Heltec confirmed receipt */
-#define MSG_STAGE_FAILED    5   /* any failure                               */
-#define CLR_STAGE_FAIL      0x8B0000  /* muted red for FAIL display */
+/* ── Per-message pipeline stages ─────────────────────────────────────────
+   TX pipeline ends at transmitted. No delivery confirmation.
+   Display prefix: ---- PENDING, >>>> SENT, FAIL FAILED                   */
+#define MSG_STAGE_PENDING  0   /* created locally, not yet transmitted      */
+#define MSG_STAGE_SENT     1   /* on air — Heltec LoRa TX complete          */
+#define MSG_STAGE_FAILED   2   /* any failure                               */
+#define CLR_STAGE_FAIL     0x8B0000   /* muted red for FAIL display         */
 
 /* ── Sound (optional piezo buzzer) ──────────────────────────────────────────
    Set BUZZER_PIN to a wired GPIO.  -1 = no buzzer, all sound is no-op.     */

@@ -262,10 +262,6 @@ void loop() {
     esp_task_wdt_reset();
     lv_timer_handler();
     heltec.poll();
-    chat.checkLinkHealth(heltec.secsSinceRx(), heltec.secsSinceByte(),
-                         heltec.rxByteCount(), heltec.jsonOkCount(),
-                         heltec.jsonErrCount(), heltec.lineDropCount(),
-                         heltec.pingTxCount(), heltec.pongRxCount(),
-                         heltec.pingRxCount(), heltec.pongTxCount());
+    chat.checkLinkHealth(heltec.secsSinceRx());
     delay(5);
 }

@@ -94,41 +94,12 @@ public:
         lv_label_set_text(_rssiLbl, buf);
     }
 
-    /* Call from loop() — updates RSSI display and heartbeat dot health */
-    void checkLinkHealth(uint32_t secsSinceRx, uint32_t secsSinceByte,
-                         uint32_t uartBytes, uint32_t jsonOk,
-                         uint32_t jsonErr, uint32_t lineDrops,
-                         uint32_t pingTx, uint32_t pongRx,
-                         uint32_t pingRx, uint32_t pongTx) {
+    /* Call from loop() — dims the heartbeat dot if Heltec has gone quiet */
+    void checkLinkHealth(uint32_t secsSinceRx) {
         if (!_hbDot) return;
-        /* Dot goes red after 30 s without a status packet */
         if (secsSinceRx >= 30) {
             lv_obj_set_style_bg_color(_hbDot, lv_color_hex(CLR_LINK_DOWN), 0);
             lv_obj_set_style_opa(_hbDot, 80, 0);
-        }
-        /* Show raw byte/JSON counters so UART can be diagnosed without serial. */
-        if (pingTx > 0 || pongRx > 0 || pingRx > 0 || pongTx > 0) {
-            char buf[32];
-            snprintf(buf, sizeof(buf), "P:%lu/%lu H:%lu/%lu",
-                     (unsigned long)pongRx, (unsigned long)pingTx,
-                     (unsigned long)pingRx, (unsigned long)pongTx);
-            lv_label_set_text(_rssiLbl, buf);
-        } else if (secsSinceRx >= 5) {
-            char buf[32];
-            uint32_t bad = jsonErr + lineDrops;
-            if (uartBytes == 0) {
-                snprintf(buf, sizeof(buf), "NO UART");
-            } else if (jsonOk > 0 && bad > 0) {
-                snprintf(buf, sizeof(buf), "OK:%lu E:%lu",
-                         (unsigned long)jsonOk, (unsigned long)bad);
-            } else if (jsonOk > 0) {
-                snprintf(buf, sizeof(buf), "OK:%lu R:%lus",
-                         (unsigned long)jsonOk, (unsigned long)secsSinceByte);
-            } else {
-                snprintf(buf, sizeof(buf), "B:%lu E:%lu",
-                         (unsigned long)uartBytes, (unsigned long)bad);
-            }
-            lv_label_set_text(_rssiLbl, buf);
         }
     }
 
@@ -435,16 +406,15 @@ private:
     }
 
     /* Build the full display line for one message.
-       Sent format:     ">>>- HH:MM:SS <CS> PT: plain  CT: "cipher""
-       Received format: "HH:MM:SS <CS> PT: plain  CT: "cipher""
-       4-char dash-fill prefix shows pipeline progress on sent messages only.
-       CT portion shown only when encOn and cipher is non-empty.             */
+       Sent:     "---- HH:MM:SS <CS> PT: plain" (pending)
+                 ">>>> HH:MM:SS <CS> PT: plain" (sent)
+       Received: "HH:MM:SS <CS> PT: plain"
+       CT portion appended when encOn and cipher non-empty.                  */
     static void _buildLine(char* buf, size_t sz,
                            const ChatMessage& m, bool encOn)
     {
         bool showCt = encOn && m.cipher[0] != '\0';
         if (!m.sent) {
-            /* Received: no prefix, timestamp starts at column 0 */
             if (showCt) {
                 snprintf(buf, sz, "%s <%s> PT: %s  CT: \"%s\"",
                          m.timestamp, m.callsign, m.plain, m.cipher);
@@ -453,15 +423,11 @@ private:
                          m.timestamp, m.callsign, m.plain);
             }
         } else {
-            /* Sent: 4-char dash-fill indicator + space before timestamp */
             const char* ind;
             switch (m.stage) {
-                case MSG_STAGE_FAILED:    ind = "FAIL"; break;
-                case MSG_STAGE_COMPLETE:  ind = ">>>>"; break;
-                case MSG_STAGE_RADIO_ACK: ind = ">>>-"; break;
-                case MSG_STAGE_ENCRYPTED: ind = ">>--"; break;
-                case MSG_STAGE_QUEUED:    ind = ">---"; break;
-                default:                  ind = "----"; break; /* PENDING */
+                case MSG_STAGE_FAILED: ind = "FAIL"; break;
+                case MSG_STAGE_SENT:   ind = ">>>>"; break;
+                default:               ind = "----"; break;
             }
             if (showCt) {
                 snprintf(buf, sz, "%s %s <%s> PT: %s  CT: \"%s\"",
@@ -481,17 +447,10 @@ private:
         lv_label_set_text(s.mainLbl, line);
 
         uint32_t color;
-        if (!m.sent) {
-            color = CLR_PHOSPHOR_MID;
-        } else if (m.stage == MSG_STAGE_FAILED) {
-            color = CLR_STAGE_FAIL;
-        } else if (m.stage >= MSG_STAGE_COMPLETE) {
-            color = CLR_PHOSPHOR;           /* >>>> bright: far screen posted */
-        } else if (m.stage >= MSG_STAGE_RADIO_ACK) {
-            color = CLR_PHOSPHOR_MID;       /* >>>- medium: radio layer acked */
-        } else {
-            color = CLR_PHOSPHOR_DIM;       /* ---- >--- >>-- still in flight */
-        }
+        if (!m.sent)                          color = CLR_PHOSPHOR_MID;
+        else if (m.stage == MSG_STAGE_FAILED) color = CLR_STAGE_FAIL;
+        else if (m.stage == MSG_STAGE_SENT)   color = CLR_PHOSPHOR;
+        else                                  color = CLR_PHOSPHOR_DIM;
         lv_obj_set_style_text_color(s.mainLbl, lv_color_hex(color), 0);
     }
 

@@ -95,47 +95,6 @@ public:
         _oled.display();
     }
 
-    /* Live diagnostics — call from loop() every few seconds.
-       Shows UART and radio counters so you can debug without serial monitor. */
-    void showIdle(const char* role,
-                  uint32_t crowBytes, uint32_t crowRx, uint32_t crowErr,
-                  uint32_t pingTx, uint32_t pongRx,
-                  uint32_t pingRx, uint32_t pongTx,
-                  uint32_t crowSawPing, uint32_t crowSentPong,
-                  uint32_t radioTx, uint32_t radioRx,
-                  uint32_t heapKb)
-    {
-        (void)heapKb;
-        _oled.clearDisplay();
-        _oled.setCursor(0, 0);
-        _oled.print("ENIGMA ");
-        _oled.println(role);
-        _oled.drawFastHLine(0, 9, SCREEN_WIDTH, SSD1306_WHITE);
-
-        char buf[22];
-        snprintf(buf, sizeof(buf), "CROW B:   %5lu", (unsigned long)crowBytes);
-        _oled.setCursor(0, 12); _oled.println(buf);
-
-        snprintf(buf, sizeof(buf), "C OK/E: %3lu/%3lu",
-                 (unsigned long)crowRx, (unsigned long)crowErr);
-        _oled.setCursor(0, 21); _oled.println(buf);
-
-        snprintf(buf, sizeof(buf), "H P/P: %3lu/%3lu",
-                 (unsigned long)pingTx, (unsigned long)pongRx);
-        _oled.setCursor(0, 30); _oled.println(buf);
-
-        snprintf(buf, sizeof(buf), "C SAW: %3lu/%3lu",
-                 (unsigned long)crowSawPing, (unsigned long)crowSentPong);
-        _oled.setCursor(0, 39); _oled.println(buf);
-
-        snprintf(buf, sizeof(buf), "CP:%lu/%lu R:%lu/%lu",
-                 (unsigned long)pingRx, (unsigned long)pongTx,
-                 (unsigned long)radioTx, (unsigned long)radioRx);
-        _oled.setCursor(0, 48); _oled.println(buf);
-
-        _oled.display();
-    }
-
 private:
     Adafruit_SSD1306 _oled;
 };
