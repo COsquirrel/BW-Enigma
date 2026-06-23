@@ -137,7 +137,7 @@ static void closeSettings() {
    ════════════════════════════════════════════════════════════════ */
 static void doSend(const char* text) {
     uint16_t id = chat.addSentMessage(text);
-    heltec.sendMessage(text, id);
+    heltec.sendMessage(text, id, myCallsign.c_str());
 }
 
 /* ════════════════════════════════════════════════════════════════

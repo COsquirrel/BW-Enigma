@@ -91,14 +91,15 @@ public:
         _sendJson(doc);
     }
 
-    /* Sanitise plain text then send {"type":"tx","msg":"...","id":N}\n */
-    void sendMessage(const char* plain, uint16_t id) {
+    /* Sanitise plain text then send {"type":"tx","callsign":"...","msg":"...","id":N}\n */
+    void sendMessage(const char* plain, uint16_t id, const char* callsign) {
         char clean[MAX_MSG_LEN + 1];
         _sanitise(plain, clean, sizeof(clean));
         JsonDocument doc;
-        doc["type"] = "tx";
-        doc["msg"]  = clean;
-        doc["id"]   = id;
+        doc["type"]     = "tx";
+        doc["callsign"] = callsign;
+        doc["msg"]      = clean;
+        doc["id"]       = id;
         _sendJson(doc);
     }
 

@@ -96,8 +96,9 @@ static void handleCrowJson(const char* raw) {
         }
 
     } else if (strcmp(type, "tx") == 0) {
-        const char* msg = doc["msg"] | "";
-        uint16_t    id  = doc["id"]  | (uint16_t)0;
+        const char* msg      = doc["msg"]      | "";
+        const char* callsign = doc["callsign"] | _nodeId;
+        uint16_t    id       = doc["id"]       | (uint16_t)0;
 
         String clean = sanitizeInput(String(msg));
 
@@ -110,10 +111,11 @@ static void handleCrowJson(const char* raw) {
             return;
         }
 
-        /* Build plaintext block: FROM|MESSAGE
+        /* Build plaintext block: CALLSIGN|MESSAGE
+           Callsign is the human-readable FROM identifier shown on the far display.
            '|' (ASCII 124) is within cipher range and encrypts with the rest. */
         char plainBlock[260];
-        snprintf(plainBlock, sizeof(plainBlock), "%s|%s", _nodeId, clean.c_str());
+        snprintf(plainBlock, sizeof(plainBlock), "%s|%s", callsign, clean.c_str());
 
         /* Encrypt the entire block */
         String cipher = enigma.processString(String(plainBlock));
