@@ -8,7 +8,7 @@
 
 ## What Is It
 
-BW Enigma is a two-unit encrypted text messenger built on ESP32 hardware with no internet, no cell network, and no third-party infrastructure required. Messages are encrypted with a software Enigma-style rotor cipher, transmitted over ESP-NOW (or LoRa — selectable at compile time), and displayed on a touchscreen console-style chat interface.
+BW Enigma is a two-unit encrypted text messenger built on ESP32 hardware with no internet, no cell network, and no third-party infrastructure required. Messages are encrypted with a software Enigma-style rotor cipher, transmitted over LoRa 915 MHz, and displayed on a touchscreen console-style chat interface.
 
 The project started as a curiosity about how the historical Enigma machine worked and turned into a fully functional encrypted radio messenger built from scratch — cipher engine, radio layer, display, and UI all written by hand.
 
@@ -18,7 +18,7 @@ The project started as a curiosity about how the historical Enigma machine worke
 
 **Radio / cipher units (×2):**
 - Heltec WiFi LoRa 32 V3 (ESP32-S3 + SX1262 + SSD1306 OLED)
-- Antenna matched to radio mode (2.4GHz for ESP-NOW, 915MHz for LoRa)
+- 915 MHz LoRa antenna
 
 **UI host (×1 per station):**
 - Elecrow CrowPanel 5" WZ8048C050 (ESP32-S3, 800×480 RGB touch display, GT911)
@@ -32,16 +32,16 @@ The project started as a curiosity about how the historical Enigma machine worke
 ┌─────────────────────┐          ┌──────────────────────┐
 │  CrowPanel 5"       │          │  Heltec V3           │
 │  LVGL console UI    │◄─UART──►│  Enigma cipher       │
-│  Phosphor green     │  JSON    │  ESP-NOW / LoRa      │
-│  touch keyboard     │          │  NVS key storage     │
+│  Phosphor green     │  JSON    │  LoRa SX1262         │
+│  touch keyboard     │          │  NVS key + node ID   │
 └─────────────────────┘          └──────────┬───────────┘
-                                            │ ESP-NOW / LoRa
-                                            │
+                                            │ LoRa 915 MHz
+                                            │ (broadcast)
                                  ┌──────────┴───────────┐
                                  │  Heltec V3           │
                                  │  Enigma cipher       │
-                                 │  ESP-NOW / LoRa      │
-                                 │  NVS key storage     │
+                                 │  LoRa SX1262         │
+                                 │  NVS key + node ID   │
                                  └──────────┬───────────┘
                                             │
                                  ┌──────────┴───────────┐
@@ -51,7 +51,31 @@ The project started as a curiosity about how the historical Enigma machine worke
                                  └──────────────────────┘
 ```
 
-The CrowPanel handles all UI — touchscreen keyboard, phosphor green console chat, encryption toggle, signal strength and link diagnostics. The Heltec handles all RF and cipher work. Plaintext travels over a short UART cable between them. Ciphertext only ever touches the radio.
+The CrowPanel handles all UI — touchscreen keyboard, phosphor green console chat, encryption toggle, and link health indicator. The Heltec handles all RF and cipher work. Plaintext travels over a short UART cable between them. Ciphertext only ever touches the radio.
+
+All radios receive all traffic. Any unit with a matching cipher configuration can decrypt and read incoming messages. Units without matching configuration receive garbage.
+
+---
+
+## Identity and Provisioning
+
+Each Heltec unit has a **node ID** — a short identifier stored in NVS. On first boot it defaults to the last 4 hex characters of the chip's WiFi MAC address (e.g. `C0DC`). The same firmware binary flashes to every unit — no per-unit code changes, no config files, no compile-time customization.
+
+To set a custom node ID: open the CrowPanel settings screen, enter the new ID in the NODE ID field, and press SAVE. The CrowPanel sends it to the Heltec over UART, which writes it to NVS and uses it immediately. The value survives reboots.
+
+---
+
+## Packet Format
+
+Every outgoing message is transmitted as a single encrypted LoRa packet:
+
+```
+plaintext block:  CALLSIGN|MESSAGE
+                  ↓ Enigma encrypt (entire block as one string)
+ciphertext:       [transmitted over LoRa]
+```
+
+The receiving unit decrypts the block, splits on the first `|` to recover callsign and message, and forwards them to its CrowPanel over UART. Because `|` encrypts along with the rest of the characters, a unit without the correct cipher sees only noise — no delimiter is detectable.
 
 ---
 
@@ -59,47 +83,29 @@ The CrowPanel handles all UI — touchscreen keyboard, phosphor green console ch
 
 The CrowPanel and Heltec communicate over UART1 at 115200 baud using newline-delimited JSON.
 
-| Direction | Type | Payload |
+| Direction | Type | Key fields |
 |---|---|---|
-| CrowPanel → Heltec | `{"type":"tx","msg":"...","id":N}` | Send a message |
-| CrowPanel → Heltec | `{"type":"status"}` | Request status |
-| CrowPanel → Heltec | `{"type":"ping","seq":N}` | Link health ping |
-| Heltec → CrowPanel | `{"type":"rx","plain":"...","cipher":"...","rssi":N}` | Received message |
-| Heltec → CrowPanel | `{"type":"tx_ack","id":N,"stage":"uart\|radio\|delivered\|fail"}` | Delivery progress |
-| Heltec → CrowPanel | `{"type":"remote_ack","id":N}` | Remote unit confirmed receipt |
-| Heltec → CrowPanel | `{"type":"status","radio":"ok","key":"nvs","rssi":N}` | Status reply |
+| CrowPanel → Heltec | `tx` | `callsign`, `msg`, `id` |
+| CrowPanel → Heltec | `status` | *(request status)* |
+| CrowPanel → Heltec | `set_node_id` | `node_id` |
+| Heltec → CrowPanel | `rx` | `callsign`, `plain`, `cipher`, `rssi`, `snr` |
+| Heltec → CrowPanel | `tx_ack` | `id`, `stage` (`encrypted`\|`transmitted`\|`fail`), `cipher` |
+| Heltec → CrowPanel | `status` | `radio`, `key`, `node_id` |
+| Heltec → CrowPanel | `node_id_ack` | `node_id` |
 
-### Per-Message ACK Stages
+The `tx_ack` with `stage: encrypted` carries the ciphertext so the CrowPanel can display it inline when the ENC toggle is on, before the message is transmitted.
 
-Each sent message tracks delivery through 5 stages shown inline on the chat console:
+### Message Pipeline
+
+Each sent message shows a 4-character indicator that updates as it moves through the pipeline:
 
 ```
-----   PENDING    submitted to Heltec, no reply yet
->---   UART       Heltec received via UART
->>--   RADIO      esp_now_send() returned OK
->>>-   DELIVERED  remote MAC acknowledged at radio layer
->>>>   REMOTE     remote Heltec sent explicit application ACK
+----   PENDING    submitted to Heltec, awaiting reply
+>>>>   SENT       transmitted over LoRa
 FAIL   FAILED     any stage failed
 ```
 
----
-
-## ESP-NOW Radio (default)
-
-In ESP-NOW mode the Heltec units use a binary packet framing over WiFi:
-
-```
-Data packet:  [0x01][id_lo][id_hi][ciphertext...]
-ACK packet:   [0x02][id_lo][id_hi]
-```
-
-Each unit identifies its peer by WiFi MAC address (set in `config/config.h`). Role (UNIT1/UNIT2) is auto-detected at boot by comparing the chip's eFuse MAC against both configured MACs — no separate firmware builds required.
-
-Switch to LoRa by changing `RADIO_MODE` in `config/config.h`:
-```c
-#define RADIO_MODE  RADIO_ESPNOW   // default
-#define RADIO_MODE  RADIO_LORA     // SX1262 915 MHz
-```
+No delivery confirmation — LoRa is broadcast with no MAC-layer ACK. Message sent = done.
 
 ---
 
@@ -119,6 +125,8 @@ plaintext
 
 Three rotors advance on an odometer schedule — right rotor every character, middle every 94, left every 8836. The reflector is a true involution with zero fixed points, achieved by operating over 94 printable ASCII characters (32–125, tilde excluded for even range). Because the reflector makes the operation symmetric, the same function encrypts and decrypts. Both units reset to identical rotor starting positions before each message.
 
+The entire `CALLSIGN|MESSAGE` block is encrypted as a single string — the delimiter encrypts with everything else, so an observer with the wrong key sees no structure.
+
 Rotor starting positions and plugboard configuration are stored in NVS and survive reboots. Rotor wiring tables are compiled in and shared between paired units as the secret key.
 
 ---
@@ -129,7 +137,7 @@ Rotor starting positions and plugboard configuration are stored in NVS and survi
 BW-Enigma/
 ├── enigma-heltec/              ← Heltec radio/cipher firmware
 │   ├── src/
-│   │   ├── main.cpp            ← UART bridge, radio loop, ACK tracking
+│   │   ├── main.cpp            ← UART bridge, LoRa RX/TX, node ID provisioning
 │   │   ├── utils.h             ← sanitizeInput, wordWrap
 │   │   ├── cipher/
 │   │   │   ├── rotor.h/.cpp
@@ -137,14 +145,13 @@ BW-Enigma/
 │   │   │   └── enigma.h/.cpp
 │   │   ├── radio/
 │   │   │   ├── radio_interface.h
-│   │   │   ├── espnow_radio.h  ← binary framing, TX callback, remote ACK
-│   │   │   └── lora_radio.h
+│   │   │   └── lora_radio.h    ← SX1262 RadioLib, ISR-driven RX, blocking TX
 │   │   ├── display/
-│   │   │   └── display.h       ← SSD1306 OLED screens + idle diagnostics
+│   │   │   └── display.h       ← SSD1306 OLED: splash, sent, received screens
 │   │   └── config/
-│   │       ├── config.h        ← MACs, rotor tables, radio mode
-│   │       ├── key_storage.h
-│   │       ├── config_user.h        ← gitignored, your custom key
+│   │       ├── config.h        ← rotor tables, NVS keys, OLED pins
+│   │       ├── key_storage.h   ← NVS load/save for rotor start + plugboard
+│   │       ├── config_user.h        ← gitignored — your custom key
 │   │       └── config_user.h.example
 │   ├── enigma_test.py
 │   └── platformio.ini
@@ -152,14 +159,14 @@ BW-Enigma/
 ├── enigma-crowpanel/           ← CrowPanel UI firmware
 │   ├── src/
 │   │   ├── main.cpp            ← LVGL setup, callbacks, splash
-│   │   ├── config.h            ← colors, layout, UART pins, ACK defines
-│   │   ├── board_config.h      ← display/touch hardware init (CrowPanel only)
+│   │   ├── config.h            ← colors, layout, UART pins, pipeline stage defines
+│   │   ├── board_config.h      ← display/touch hardware init (CrowPanel specific)
 │   │   ├── ui/
-│   │   │   ├── chat_screen.h   ← console UI, message pool, ACK labels
-│   │   │   ├── keyboard.h      ← 3-layer touch keyboard
-│   │   │   └── settings_screen.h
+│   │   │   ├── chat_screen.h   ← console UI, message ring buffer, pipeline labels
+│   │   │   ├── keyboard.h      ← 3-layer touch keyboard (lower/upper/symbols)
+│   │   │   └── settings_screen.h ← callsign + node ID settings
 │   │   └── comms/
-│   │       └── heltec_bridge.h ← UART JSON bridge, ping/pong, diagnostics
+│   │       └── heltec_bridge.h ← UART JSON bridge, FreeRTOS Core 0/1 split
 │   ├── include/
 │   │   └── lv_conf.h
 │   ├── partitions.csv
@@ -173,43 +180,41 @@ BW-Enigma/
 ## Getting Started
 
 ### Requirements
-- PlatformIO with VS Code
+- PlatformIO (VS Code extension or CLI)
 - Python 3.x (for cipher test harness)
 - 2× Heltec WiFi LoRa 32 V3
 - 2× Elecrow CrowPanel 5" WZ8048C050
 
-### Verify cipher first
+### Verify the cipher
 ```bash
 cd enigma-heltec
-python3 enigma_test.py       # full self test
+python3 enigma_test.py       # full self-test
 python3 enigma_test.py -i    # interactive mode
 ```
 
-### Configure unit MACs
-Edit `enigma-heltec/src/config/config.h` with the WiFi MAC addresses of both Heltec units:
-```c
-#define UNIT1_MAC  {0xAC, 0xA7, 0x04, 0x3C, 0xC0, 0xDC}
-#define UNIT2_MAC  {0xAC, 0xA7, 0x04, 0x3C, 0xC0, 0xE4}
-```
-Role (UNIT1 / UNIT2) is auto-detected at boot from the chip's eFuse MAC — the same firmware flashes to both units.
-
-### Flash Heltec units (same firmware to both)
+### Flash Heltec units (identical firmware to both)
 ```bash
 cd enigma-heltec
 pio run -t upload
 ```
 
-### Flash CrowPanel
+Node IDs are provisioned at runtime — no per-unit changes before flashing.
+
+### Flash CrowPanel units (identical firmware to both)
 ```bash
 cd enigma-crowpanel
 pio run -t upload
 ```
 
-### Custom key
+### Set callsign and node ID
+Open settings (gear icon) on each CrowPanel. Enter the unit's callsign and a node ID, then press SAVE. The node ID is sent to the Heltec and written to NVS — it persists across reboots.
+
+### Custom cipher key
 ```bash
 cp enigma-heltec/src/config/config_user.h.example \
    enigma-heltec/src/config/config_user.h
 # Fill in your own rotor wiring tables and starting positions
+# Flash both Heltec units with the same config_user.h
 ```
 
 ### UART wiring
@@ -223,22 +228,21 @@ GND                ───  GND
 
 ## Features
 
-- Enigma-style 3-rotor cipher, 94-character printable ASCII range
+- Enigma-style 3-rotor cipher over 94-character printable ASCII range
 - Zero fixed points — even character range guarantees no character encrypts to itself
-- Full plugboard and reflector implementation
-- ESP-NOW radio link — no infrastructure, no internet, no pairing ceremony
-- LoRa 915MHz radio layer — swap at compile time
-- Binary ESP-NOW packet framing with message IDs and application-level ACK
-- Per-message delivery tracking: UART → RADIO → DELIVERED → REMOTE
-- NVS key storage — rotor starting positions persist across reboots
-- Auto role detection from WiFi MAC — one firmware for both units
+- Entire `CALLSIGN|MESSAGE` block encrypted as one unit — no structure visible without the key
+- LoRa 915 MHz broadcast — no infrastructure, no pairing, no addressing
+- Single firmware binary for all units — identity is fully runtime-provisioned via NVS
+- Node ID defaults to last 4 hex chars of WiFi MAC; user-settable via settings screen
+- NVS key storage — rotor starting positions and node ID persist across reboots
 - Phosphor green console-style touch UI on CrowPanel 5"
 - 3-layer onscreen keyboard (lower / upper / numeric+symbols)
 - Encryption toggle — show ciphertext inline per message
-- Callsign configurable per unit via settings screen
-- Ping/pong link health with byte and JSON counters displayed on OLED
-- UART recovery — CrowSerial reinit if silent for 20s
-- Input sanitizer — strips non-printable characters
+- Per-message pipeline indicator (`----` → `>>>>` → `FAIL`)
+- Callsign and node ID configurable via settings screen; node ID synced to Heltec NVS over UART
+- Link health dot — turns red if Heltec goes quiet for 30 seconds
+- UART recovery — CrowSerial reinit if line is silent for 20 s
+- Input sanitizer — strips non-cipher-range characters before encryption
 - Python test harness for desktop cipher verification
 
 ---
@@ -276,19 +280,20 @@ Building it on real hardware with a radio link and a proper touch UI makes the c
 - [x] Cipher engine — rotor, plugboard, reflector, zero fixed points
 - [x] Input sanitizer and word wrap
 - [x] Python test harness
-- [x] OLED display layer with idle diagnostics
-- [x] ESP-NOW radio link with binary packet framing
-- [x] LoRa radio layer
+- [x] OLED display layer (splash, sent, received screens)
+- [x] LoRa 915 MHz radio via RadioLib SX1262
+- [x] Single firmware binary — runtime identity provisioning via NVS
+- [x] Node ID from WiFi MAC with user-settable NVS override
+- [x] Encrypted broadcast packet — CALLSIGN|MESSAGE block
 - [x] Two-way messaging
 - [x] NVS key storage
-- [x] Auto role detection from WiFi MAC
-- [x] CrowPanel LVGL console UI (phosphor green, no bubbles)
-- [x] UART JSON bridge with ping/pong diagnostics
-- [x] Per-message ACK tracking (5 stages)
-- [x] Settings screen / callsign config
-- [x] Signal strength display
+- [x] CrowPanel LVGL console UI (phosphor green, console style)
+- [x] UART JSON bridge with FreeRTOS Core 0/1 split
+- [x] Per-message pipeline indicator
+- [x] Callsign + node ID settings screen
+- [x] Self-rx fix — TX-done ISR no longer triggers false receive
 - [ ] Key generation utility
-- [ ] Power management (OLED dim/sleep, CPU scaling)
+- [ ] Power management (OLED dim/sleep, CPU frequency scaling)
 - [ ] Make repo public
 
 ---
