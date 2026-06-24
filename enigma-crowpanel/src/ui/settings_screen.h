@@ -144,6 +144,13 @@ private:
         lv_obj_set_style_border_color(ta, lv_color_hex(CLR_AMBER), 0);
         lv_obj_set_style_border_width(ta, 1, 0);
         lv_obj_set_style_radius(ta, 4, 0);
+        /* Focused: phosphor green border + glow so the active field is obvious */
+        lv_obj_set_style_border_color(ta, lv_color_hex(CLR_PHOSPHOR), LV_STATE_FOCUSED);
+        lv_obj_set_style_border_width(ta, 2, LV_STATE_FOCUSED);
+        lv_obj_set_style_shadow_color(ta, lv_color_hex(CLR_PHOSPHOR), LV_STATE_FOCUSED);
+        lv_obj_set_style_shadow_width(ta, 10, LV_STATE_FOCUSED);
+        lv_obj_set_style_shadow_spread(ta, 2, LV_STATE_FOCUSED);
+        lv_obj_set_style_shadow_opa(ta, LV_OPA_60, LV_STATE_FOCUSED);
         return ta;
     }
 
