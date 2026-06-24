@@ -88,6 +88,7 @@ The CrowPanel and Heltec communicate over UART1 at 115200 baud using newline-del
 | CrowPanel → Heltec | `tx` | `callsign`, `msg`, `id` |
 | CrowPanel → Heltec | `status` | *(request status)* |
 | CrowPanel → Heltec | `set_node_id` | `node_id` |
+| CrowPanel → Heltec | `set_passphrase` | `passphrase` |
 | Heltec → CrowPanel | `rx` | `callsign`, `plain`, `cipher`, `rssi`, `snr` |
 | Heltec → CrowPanel | `tx_ack` | `id`, `stage` (`encrypted`\|`transmitted`\|`fail`), `cipher` |
 | Heltec → CrowPanel | `status` | `radio`, `key`, `node_id` |
@@ -150,9 +151,11 @@ BW-Enigma/
 │   │   │   └── display.h       ← SSD1306 OLED: splash, sent, received screens
 │   │   └── config/
 │   │       ├── config.h        ← rotor tables, NVS keys, OLED pins
-│   │       ├── key_storage.h   ← NVS load/save for rotor start + plugboard
+│   │       ├── key_storage.h   ← NVS load/save for rotor start, plugboard, passphrase
+│   │       ├── key_derive.h    ← passphrase → EnigmaConfig derivation (matches keygen.py)
 │   │       ├── config_user.h        ← gitignored — your custom key
 │   │       └── config_user.h.example
+│   ├── keygen.py               ← key generator: passphrase or random tables → config_user.h
 │   ├── enigma_test.py
 │   └── platformio.ini
 │
@@ -164,7 +167,7 @@ BW-Enigma/
 │   │   ├── ui/
 │   │   │   ├── chat_screen.h   ← console UI, message ring buffer, pipeline labels
 │   │   │   ├── keyboard.h      ← 3-layer touch keyboard (lower/upper/symbols)
-│   │   │   └── settings_screen.h ← callsign + node ID settings
+│   │   │   └── settings_screen.h ← callsign, node ID, and key passphrase settings
 │   │   └── comms/
 │   │       └── heltec_bridge.h ← UART JSON bridge, FreeRTOS Core 0/1 split
 │   ├── include/
@@ -246,7 +249,8 @@ GND                ───  GND
 - 3-layer onscreen keyboard (lower / upper / numeric+symbols)
 - Encryption toggle — show ciphertext inline per message
 - Per-message pipeline indicator (`----` → `>>>>` → `FAIL`)
-- Callsign and node ID configurable via settings screen; node ID synced to Heltec NVS over UART
+- Callsign, node ID, and cipher key passphrase configurable via settings screen
+- `keygen.py` generates compile-time keys from a passphrase or random tables; fingerprint output for cross-unit verification
 - Link health dot — turns red if Heltec goes quiet for 30 seconds
 - UART recovery — CrowSerial reinit if line is silent for 20 s
 - Input sanitizer — strips non-cipher-range characters before encryption
@@ -301,7 +305,6 @@ Building it on real hardware with a radio link and a proper touch UI makes the c
 - [x] Self-rx fix — TX-done ISR no longer triggers false receive
 - [x] Key generation utility (`keygen.py`) with passphrase derivation and runtime settings screen entry
 - [ ] Power management (OLED dim/sleep, CPU frequency scaling)
-- [ ] Make repo public
 
 ---
 
