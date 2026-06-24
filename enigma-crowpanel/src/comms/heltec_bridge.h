@@ -79,6 +79,17 @@ public:
         }
     }
 
+    /* Send a shared passphrase to the Heltec; it derives all key material and reinits
+       the cipher immediately.  Empty string clears the passphrase and reverts to the
+       compiled-in default key.  The Heltec responds with a status message whose "key"
+       field reflects the new state ("phrase", "nvs", or "def").                       */
+    void setPassphrase(const char* phrase) {
+        JsonDocument doc;
+        doc["type"]       = "set_passphrase";
+        doc["passphrase"] = phrase;
+        _sendJson(doc);
+    }
+
     /* Send set_node_id command to Heltec — writes to NVS there, takes effect immediately */
     void setNodeId(const char* id) {
         JsonDocument doc;

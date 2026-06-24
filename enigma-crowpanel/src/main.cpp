@@ -98,9 +98,20 @@ static void onHeltecNodeId(const char* nodeId) {
 static void _onSoundToggled(bool v) { s_soundEnabled = v; }
 
 static void _onNodeIdChanged(const char* id) {
-    /* Send to Heltec (writes NVS there), also cache locally */
     heltec.setNodeId(id);
     prefs.putString(NVS_KEY_NODE_ID, id);
+}
+
+static void _onPassphraseChanged(const char* phrase) {
+    /* Send to Heltec — it derives the key and reinits the cipher immediately.
+       Cache locally so the settings screen can pre-fill on next open.
+       Empty string = clear passphrase, revert to compiled default key.      */
+    heltec.setPassphrase(phrase);
+    if (phrase && strlen(phrase) > 0) {
+        prefs.putString(NVS_KEY_PASSPHRASE, phrase);
+    } else {
+        prefs.remove(NVS_KEY_PASSPHRASE);
+    }
 }
 
 static void _onCallsignFocused() {
@@ -109,14 +120,19 @@ static void _onCallsignFocused() {
 static void _onNodeIdFocused() {
     if (settings) chat.setKeyboardTarget(settings->nodeIdTextArea());
 }
+static void _onPassphraseFocused() {
+    if (settings) chat.setKeyboardTarget(settings->passphraseTextArea());
+}
 
 static void openSettings() {
     if (settings) return;
     settings = new SettingsScreen();
-    settings->onSoundChanged    = _onSoundToggled;
-    settings->onNodeIdChanged   = _onNodeIdChanged;
-    settings->onCallsignFocused = _onCallsignFocused;
-    settings->onNodeIdFocused   = _onNodeIdFocused;
+    settings->onSoundChanged       = _onSoundToggled;
+    settings->onNodeIdChanged      = _onNodeIdChanged;
+    settings->onPassphraseChanged  = _onPassphraseChanged;
+    settings->onCallsignFocused    = _onCallsignFocused;
+    settings->onNodeIdFocused      = _onNodeIdFocused;
+    settings->onPassphraseFocused  = _onPassphraseFocused;
     settings->create(lv_scr_act(), &prefs, closeSettings);
     chat.setKeyboardTarget(settings->callsignTextArea());
 }

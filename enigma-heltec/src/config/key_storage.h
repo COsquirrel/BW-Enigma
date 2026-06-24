@@ -41,4 +41,35 @@ public:
         prefs.end();
     }
 
+    // Passphrase-based key derivation — stored separately from rotor_start/plugboard.
+    // Returns true and fills buf if a passphrase is saved; false otherwise.
+    bool loadPassphrase(char* buf, size_t len) {
+        Preferences prefs;
+        prefs.begin("enigma", /*readOnly=*/true);
+        bool ok = prefs.isKey("passphrase");
+        if (ok) {
+            String s = prefs.getString("passphrase", "");
+            strncpy(buf, s.c_str(), len - 1);
+            buf[len - 1] = '\0';
+            ok = buf[0] != '\0';
+        }
+        prefs.end();
+        return ok;
+    }
+
+    bool savePassphrase(const char* phrase) {
+        Preferences prefs;
+        prefs.begin("enigma", /*readOnly=*/false);
+        bool ok = prefs.putString("passphrase", phrase) > 0;
+        prefs.end();
+        return ok;
+    }
+
+    void clearPassphrase() {
+        Preferences prefs;
+        prefs.begin("enigma", /*readOnly=*/false);
+        prefs.remove("passphrase");
+        prefs.end();
+    }
+
 };

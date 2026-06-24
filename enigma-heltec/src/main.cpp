@@ -6,6 +6,7 @@
 #include "cipher/enigma.h"
 #include "config/config.h"
 #include "config/key_storage.h"
+#include "config/key_derive.h"
 #include "radio/lora_radio.h"
 #include "display/display.h"
 #include "utils.h"
@@ -44,8 +45,9 @@ Display    display;
 KeyStorage keyStorage;
 
 static EnigmaConfig activeCfg;
-static bool         keyFromNVS = false;
-static bool         _radioOk   = false;
+static bool         keyFromNVS    = false;
+static bool         keyFromPhrase = false;
+static bool         _radioOk      = false;
 
 static char     _crowBuf[512];
 static int      _crowLen       = 0;
@@ -66,7 +68,7 @@ static void sendStatus() {
     JsonDocument doc;
     doc["type"]    = "status";
     doc["radio"]   = _radioOk ? "ok" : "err";
-    doc["key"]     = keyFromNVS ? "nvs" : "def";
+    doc["key"]     = keyFromPhrase ? "phrase" : (keyFromNVS ? "nvs" : "def");
     doc["node_id"] = _nodeId;
     sendToCrow(doc);
 }
@@ -94,6 +96,23 @@ static void handleCrowJson(const char* raw) {
             ack["node_id"] = _nodeId;
             sendToCrow(ack);
         }
+
+    } else if (strcmp(type, "set_passphrase") == 0) {
+        const char* phrase = doc["passphrase"] | "";
+        if (strlen(phrase) == 0) {
+            keyStorage.clearPassphrase();
+            activeCfg    = ACTIVE_CONFIG;
+            keyFromNVS   = keyStorage.load(activeCfg.rotor_start, activeCfg.plugboard);
+            keyFromPhrase = false;
+        } else {
+            keyStorage.savePassphrase(phrase);
+            activeCfg = ACTIVE_CONFIG;
+            KeyDerive::derive(phrase, activeCfg);
+            keyFromNVS    = true;
+            keyFromPhrase = true;
+        }
+        enigma.init(activeCfg);
+        sendStatus();
 
     } else if (strcmp(type, "tx") == 0) {
         const char* msg      = doc["msg"]      | "";
@@ -156,8 +175,18 @@ void setup() {
 
     _loadNodeId();
 
-    activeCfg  = ACTIVE_CONFIG;
-    keyFromNVS = keyStorage.load(activeCfg.rotor_start, activeCfg.plugboard);
+    activeCfg = ACTIVE_CONFIG;
+    {
+        char phrase[64] = {};
+        if (keyStorage.loadPassphrase(phrase, sizeof(phrase))) {
+            KeyDerive::derive(phrase, activeCfg);
+            keyFromNVS    = true;
+            keyFromPhrase = true;
+        } else {
+            keyFromNVS   = keyStorage.load(activeCfg.rotor_start, activeCfg.plugboard);
+            keyFromPhrase = false;
+        }
+    }
     enigma.init(activeCfg);
 
     uint8_t mac[6];
