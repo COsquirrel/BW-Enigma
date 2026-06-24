@@ -209,13 +209,20 @@ pio run -t upload
 ### Set callsign and node ID
 Open settings (gear icon) on each CrowPanel. Enter the unit's callsign and a node ID, then press SAVE. The node ID is sent to the Heltec and written to NVS — it persists across reboots.
 
-### Custom cipher key
+### Set a private key
+
+**Option A — settings screen (no reflash):** Enter the same passphrase in the KEY field on both CrowPanels and press SAVE. The Heltec derives a full cipher key from the passphrase at runtime.
+
+**Option B — keygen (compile-time):**
 ```bash
-cp enigma-heltec/src/config/config_user.h.example \
-   enigma-heltec/src/config/config_user.h
-# Fill in your own rotor wiring tables and starting positions
-# Flash both Heltec units with the same config_user.h
+cd enigma-heltec
+python3 keygen.py                        # auto-generated passphrase
+python3 keygen.py "my secret phrase"     # derive from your own passphrase
+python3 keygen.py --random               # pure random tables (max entropy)
+# pio run -t upload on both Heltec units from the same build
 ```
+
+See `KEY_SETUP.md` for fingerprint verification, the derivation algorithm, and security notes.
 
 ### UART wiring
 ```
@@ -292,7 +299,7 @@ Building it on real hardware with a radio link and a proper touch UI makes the c
 - [x] Per-message pipeline indicator
 - [x] Callsign + node ID settings screen
 - [x] Self-rx fix — TX-done ISR no longer triggers false receive
-- [ ] Key generation utility
+- [x] Key generation utility (`keygen.py`) with passphrase derivation and runtime settings screen entry
 - [ ] Power management (OLED dim/sleep, CPU frequency scaling)
 - [ ] Make repo public
 

@@ -151,7 +151,7 @@ def run_self_tests():
         " ",
         "Mixed CASE 123 !@#",
         "ESP32 -> LoRa -> Enigma",
-        "BW-Mahopac / BDGR",
+        "BW Enigma / LoRa",
     ]
     for c in cases:
         enc = enigma.process_string(c)
@@ -285,7 +285,7 @@ def run_utils_tests():
 
     print(f"\nWord wrap ({OLED_CHARS_PER_LINE} chars/line):")
     for msg in ["The quick brown fox jumps over the lazy dog",
-                "Hi Mike", "BW-Mahopac BDGR node online",
+                "Hello world", "Badger Works node online",
                 "superlongwordthatwontfitononelineatall"]:
         lines = word_wrap(msg)
         print(f"  \"{msg}\"")

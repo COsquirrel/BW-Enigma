@@ -32,7 +32,6 @@
 #define HELTEC_TX_PIN     43   /* CrowPanel UART0 TXD0/J10 pin 2 -> Heltec GPIO44 RX */
 #define HELTEC_RX_PIN     44   /* CrowPanel UART0 RXD0/J10 pin 1 <- Heltec GPIO43 TX */
 #define HELTEC_LINE_TIMEOUT_MS 2000UL
-#define HELTEC_PING_INTERVAL_MS 3000UL
 
 /* ── NVS ── */
 #define NVS_NAMESPACE     "enigma"

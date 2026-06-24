@@ -120,6 +120,30 @@ Instructs the Heltec to update its node ID in NVS. The new value takes effect im
 |---|---|---|
 | `node_id` | string | 1–8 characters. No validation of content beyond length. |
 
+#### `set_passphrase` — Set cipher key from passphrase
+
+Instructs the Heltec to derive a complete cipher key from the supplied passphrase and reinitialize the Enigma engine immediately. The passphrase is stored in NVS and used on subsequent boots. An empty string clears the passphrase and reverts to the compiled-in default key.
+
+```json
+{
+  "type": "set_passphrase",
+  "passphrase": "NOVEMBER-FOXTROT-SIERRA-DELTA"
+}
+```
+
+```json
+{
+  "type": "set_passphrase",
+  "passphrase": ""
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `passphrase` | string | Shared passphrase; max practical length ~64 chars. Empty = revert to default. |
+
+The Heltec responds with a `status` message reflecting the new key source (`"key": "phrase"` or `"key": "def"`). The derivation algorithm is documented in `KEY_SETUP.md` and implemented identically in `key_derive.h` (C++) and `keygen.py` (Python).
+
 ---
 
 ### Heltec → CrowPanel

@@ -1,39 +1,44 @@
 // config_user.h.example
 //
-// Copy this file to config_user.h and fill in your own values.
+// Copy this file to config_user.h and fill in your own key material,
+// OR generate a complete file automatically with keygen.py:
+//
+//   python3 keygen.py                     # random passphrase, writes config_user.h
+//   python3 keygen.py "my secret phrase"  # derive from a specific passphrase
+//   python3 keygen.py --random            # pure random tables
+//
+// Alternatively, enter a shared passphrase in the CrowPanel settings screen
+// (KEY field) — the Heltec derives the same key at runtime without reflashing.
+//
 // config_user.h is gitignored and will never be committed.
+// Both units must use IDENTICAL key material to communicate.
+// Treat this file like a password — share only with intended recipients.
 //
-// Generate fresh rotor tables with:
-//   python3 generate_key.py
-//
-// Both units must use IDENTICAL values to communicate.
-// Treat this file like a password - share only with intended recipients.
+// See KEY_SETUP.md for full documentation.
 
 #pragma once
 #include "config.h"
 
-// Override the default test config with your own key
 static const EnigmaConfig USER_CONFIG = {
-    // Rotor wirings [L][M][R] - replace with output from generate_key.py
+    // Rotor wirings [L][M][R] — each is a permutation of 0-93 (94 values)
+    // Replace with output from: python3 keygen.py
     {
-        { /* Rotor L - 95 values, valid permutation of 0-94 */ },
-        { /* Rotor M - 95 values, valid permutation of 0-94 */ },
-        { /* Rotor R - 95 values, valid permutation of 0-94 */ },
+        { /* Rotor L — 94 values, valid permutation of 0-93 */ },
+        { /* Rotor M — 94 values, valid permutation of 0-93 */ },
+        { /* Rotor R — 94 values, valid permutation of 0-93 */ },
     },
-    // Reflector - 95 values, must be an involution (ref[ref[i]] == i)
-    { /* replace with output from generate_key.py */ },
-    // Rotor starting positions [L, M, R] - values 0-94
+    // Reflector — 94 values, must be a zero-fixed-point involution: ref[ref[i]] == i, ref[i] != i
+    { /* replace with output from keygen.py */ },
+    // Rotor starting positions [L, M, R] — values 0-93
     {0, 0, 0},
-    // Plugboard - 95 values, symmetric swap table, identity = no swaps
+    // Plugboard — 94 values, symmetric swap table (plug[plug[i]] == i)
+    // Identity table (no swaps) shown below — replace pairs as desired
     {
           0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15,
          16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
          32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
          48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
          64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79,
-         80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94,
+         80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93,
     }
 };
-
-// Tell config.h to use this instead of DEFAULT_CONFIG
-#define USE_USER_CONFIG
