@@ -4,10 +4,6 @@
 #include <driver/gpio.h>
 #include "../config.h"
 
-#ifndef HELTEC_DIAG_INTERVAL_MS
-#define HELTEC_DIAG_INTERVAL_MS 5000UL
-#endif
-
 /* ── Callbacks invoked from the main (LVGL) thread via poll() ── */
 struct HeltecCallbacks {
     void (*onRx)(const char* callsign, const char* plain,

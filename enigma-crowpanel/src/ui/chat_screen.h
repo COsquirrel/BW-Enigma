@@ -106,7 +106,6 @@ public:
     /* Call when a valid status packet arrives from Heltec */
     void notifyStatusReceived() {
         if (!_hbDot) return;
-        _lastStatusMs = millis();
         lv_obj_set_style_bg_color(_hbDot, lv_color_hex(CLR_PHOSPHOR), 0);
         lv_obj_set_style_opa(_hbDot, LV_OPA_COVER, 0);
     }
@@ -148,8 +147,6 @@ private:
     int         _msgCount  = 0;
     int         _msgHead   = 0;
     uint16_t    _nextMsgId = 1;   /* incremented per sent message; 0 is reserved */
-
-    uint32_t    _lastStatusMs = 0;
 
     _Slot       _pool[MAX_VISIBLE];
 

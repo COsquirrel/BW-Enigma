@@ -41,11 +41,4 @@ public:
         prefs.end();
     }
 
-    bool hasKey() {
-        Preferences prefs;
-        prefs.begin("enigma", /*readOnly=*/true);
-        bool found = prefs.isKey("rotor_start") && prefs.isKey("plugboard");
-        prefs.end();
-        return found;
-    }
 };

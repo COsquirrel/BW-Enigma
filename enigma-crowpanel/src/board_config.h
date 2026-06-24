@@ -87,33 +87,6 @@
 static Arduino_GFX*          _cp_tft = nullptr;
 static Arduino_ESP32RGBPanel* _cp_bus = nullptr;
 
-/* Raw GT911 values before calibration — updated by boardTouchRead, read by debug UI */
-static uint16_t g_cp_raw_x = 0;
-static uint16_t g_cp_raw_y = 0;
-
-/* Dump GT911 config registers to serial so we can see configured resolution + flags */
-static void _gt911Dump() {
-    /* Read 0x8047–0x8051: version, X_MAX(2), Y_MAX(2), touch_num, module_switch1 */
-    Wire.beginTransmission(CP_TOUCH_ADDR);
-    Wire.write(0x80); Wire.write(0x47);
-    Wire.endTransmission(false);
-    Wire.requestFrom((uint8_t)CP_TOUCH_ADDR, (uint8_t)11);
-    if (Wire.available() < 11) {
-        log_e("[GT911] config read failed");
-        return;
-    }
-    uint8_t ver      = Wire.read();              /* 0x8047 */
-    uint16_t xmax    = Wire.read() | ((uint16_t)Wire.read() << 8);  /* 0x8048–8049 LE */
-    uint16_t ymax    = Wire.read() | ((uint16_t)Wire.read() << 8);  /* 0x804A–804B LE */
-    uint8_t  ntouch  = Wire.read() & 0x0F;      /* 0x804C lower nibble */
-    uint8_t  sw1     = Wire.read();              /* 0x804D Module_Switch1 */
-    uint8_t  sw2     = Wire.read();              /* 0x804E */
-    Wire.read(); Wire.read(); Wire.read();       /* 0x804F–8051 */
-    log_e("[GT911] cfg ver=0x%02X X_MAX=%d Y_MAX=%d n_touch=%d sw1=0x%02X sw2=0x%02X",
-          ver, xmax, ymax, ntouch, sw1, sw2);
-    log_e("[GT911] sw1: x2y=%d y_rev=%d x_rev=%d",
-          (sw1>>3)&1, (sw1>>2)&1, (sw1>>1)&1);
-}
 
 inline void boardInit() {
     pinMode(TFT_BL_PIN, OUTPUT);
@@ -195,9 +168,6 @@ inline void boardTouchRead(lv_indev_drv_t* drv, lv_indev_data_t* data) {
 
     uint16_t raw_x = (uint16_t)b[1] | ((uint16_t)b[2] << 8);
     uint16_t raw_y = (uint16_t)b[3] | ((uint16_t)b[4] << 8);
-
-    g_cp_raw_x = raw_x;
-    g_cp_raw_y = raw_y;
 
     int cx = (int)raw_x;
     int cy = (int)raw_y;
