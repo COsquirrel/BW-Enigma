@@ -318,4 +318,7 @@ Inspired by the historical Enigma machine and the codebreakers of Bletchley Park
 
 ## License
 
-MIT — build it, learn from it, modify it. Just don't use it to protect anything real.
+Copyright © 2025 Badger Works (github.com/COsquirrel)
+This project is licensed under the GNU Affero General Public License v3.0.
+See the LICENSE file for details.
+Personal and hobbyist use is welcome. Commercial use requires written permission.
