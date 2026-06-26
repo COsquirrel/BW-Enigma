@@ -1,6 +1,6 @@
 # BW Enigma
 
-**Badger Works** | A hobbyist encrypted radio messenger inspired by the WWII Enigma machine.
+**Badger Works** | Encrypted LoRa radio messenger built on a two-board ESP32 architecture: Elecrow CrowPanel 5" touch console UI + Heltec WiFi LoRa 32 V3 cipher/radio unit. Inspired by the WWII Enigma machine. Licensed AGPL-3.0.
 
 > ⚠️ **This project is for fun and learning only. Not cryptographically secure. See disclaimer below.**
 
@@ -305,6 +305,8 @@ Building it on real hardware with a radio link and a proper touch UI makes the c
 - [x] Self-rx fix — TX-done ISR no longer triggers false receive
 - [x] Key generation utility (`keygen.py`) with passphrase derivation and runtime settings screen entry
 - [ ] Power management (OLED dim/sleep, CPU frequency scaling)
+- [ ] Hardware kit interest check (PCB, enclosure, assembled unit)
+- [ ] GitHub Sponsors / support Badger Works
 
 ---
 
@@ -313,6 +315,8 @@ Building it on real hardware with a radio link and a proper touch UI makes the c
 Inspired by the historical Enigma machine and the codebreakers of Bletchley Park, particularly Alan Turing.
 
 *A Badger Works project — COsquirrel*
+
+Commercial licensing inquiries: [contact@badgerworks.io] *(replace with actual contact when available)*
 
 ---
 
