@@ -1,3 +1,5 @@
+// Copyright (C) 2025 Mike Barnett / Badger Works
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /* ═══════════════════════════════════════════════════════════════
    Badger Works ENIGMA — 5" HMI UI host
    800×480 LVGL 8 chat interface for LoRa mesh radio

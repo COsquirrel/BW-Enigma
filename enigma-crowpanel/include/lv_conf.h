@@ -1,3 +1,5 @@
+// Copyright (C) 2025 Mike Barnett / Badger Works
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /* lv_conf.h — minimal LVGL 8 config for CrowPanel 5" (800x480) */
 #if 1  /* Set to "1" to enable content */
 

@@ -1,3 +1,5 @@
+// Copyright (C) 2025 Mike Barnett / Badger Works
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #include "rotor.h"
 
 Rotor::Rotor() : _offset(0), _start_offset(0) {

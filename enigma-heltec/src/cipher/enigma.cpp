@@ -1,3 +1,5 @@
+// Copyright (C) 2025 Mike Barnett / Badger Works
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #include "enigma.h"
 
 Enigma::Enigma() : _char_count(0) {

@@ -1,3 +1,5 @@
+// Copyright (C) 2025 Mike Barnett / Badger Works
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include <lvgl.h>
 #include "../config.h"

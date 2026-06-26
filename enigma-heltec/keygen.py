@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (C) 2025 Mike Barnett / Badger Works
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 BW Enigma key generator.
 
