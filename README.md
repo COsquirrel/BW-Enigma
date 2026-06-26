@@ -316,7 +316,7 @@ Inspired by the historical Enigma machine and the codebreakers of Bletchley Park
 
 *A Badger Works project — COsquirrel*
 
-Commercial licensing inquiries: [contact@badgerworks.io] *(replace with actual contact when available)*
+Commercial licensing inquiries: [Mike.Barnett@BadgerWorksIO.com] *(replace with actual contact when available)*
 
 ---
 
